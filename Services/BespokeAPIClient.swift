@@ -5,7 +5,7 @@ struct BespokeAPIClient: Sendable {
     private let session: URLSession
 
     init(baseURL: URL = APIBaseURL.current, session: URLSession = .shared) {
-        self.baseURL = baseURL
+        self.baseURL = APIBaseURL.withTrailingSlash(baseURL)
         self.session = session
     }
 
