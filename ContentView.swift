@@ -47,7 +47,7 @@ struct ContentView: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .background(BespokeColor.pageBackground)
-                .navigationTitle("Bespoke Dua")
+                .navigationTitle("BespokeDua")
                 .navigationBarTitleDisplayMode(.large)
                 .toolbarBackground(LinearGradient.bespokeNavBar, for: .navigationBar)
                 .toolbarBackground(.visible, for: .navigationBar)
@@ -67,7 +67,7 @@ struct ContentView: View {
             NavigationStack {
                 SavedDuasPageView()
                     .background(BespokeColor.pageBackground)
-                    .navigationTitle("My heart's duas")
+                    .navigationTitle("BespokeDua")
                     .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(LinearGradient.bespokeNavBar, for: .navigationBar)
                 .toolbarBackground(.visible, for: .navigationBar)
@@ -979,85 +979,109 @@ private struct SavedDuasPageView: View {
         .padding(.horizontal, 20)
     }
 
+    /// Matches home `inputSection` title styling (`Write your heart’s dua`).
+    private var savedPageHeading: some View {
+        Text("My heart’s dua")
+            .font(BespokeFont.display(26))
+            .foregroundStyle(BespokeColor.forest)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 11)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
+    }
+
     var body: some View {
         Group {
             if !session.isLoggedIn {
                 savedDuasSignedOutContent
             } else {
-                Group {
-                    if loading && items.isEmpty {
-                        VStack(spacing: 16) {
-                            ProgressView()
-                                .tint(BespokeColor.forest)
-                                .scaleEffect(1.1)
-                            Text("Loading your saved duas…")
-                                .font(BespokeFont.inter(16, weight: .medium))
-                                .foregroundStyle(BespokeColor.muted)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(24)
-                    } else if let error {
-                        ContentUnavailableView {
-                            Label("Couldn’t load", systemImage: "exclamationmark.triangle")
-                        } description: {
-                            Text(error)
-                                .font(BespokeFont.inter(15, weight: .regular))
-                                .foregroundStyle(BespokeColor.muted)
-                                .multilineTextAlignment(.center)
-                        }
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(BespokeColor.error.opacity(0.85))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(24)
-                    } else if items.isEmpty {
-                        ContentUnavailableView {
-                            Label("Nothing saved yet", systemImage: "bookmark")
-                        } description: {
-                            Text("When you bookmark a generated dua, it appears here—newest first.")
-                                .font(BespokeFont.inter(15, weight: .regular))
-                                .foregroundStyle(BespokeColor.muted)
-                                .multilineTextAlignment(.center)
-                        }
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(BespokeColor.muted)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(24)
-                    } else {
-                        List {
-                            Section {
-                                ForEach(items) { row in
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        Text(Self.dateFormatter.string(from: row.createdAt))
-                                            .font(BespokeFont.inter(13, weight: .semibold))
-                                            .foregroundStyle(BespokeColor.muted)
-                                            .textCase(.uppercase)
-                                            .tracking(0.3)
+                VStack(spacing: 0) {
+                    savedPageHeading
 
-                                        savedSampleCard(text: row.dua)
-                                    }
-                                    .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
-                                    .listRowSeparator(.hidden)
-                                    .listRowBackground(Color.clear)
-                                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                        Button(role: .destructive) {
-                                            Task { await delete(row) }
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                    }
-                                }
-                            } header: {
+                    Group {
+                        if loading && items.isEmpty {
+                            VStack(spacing: 16) {
+                                ProgressView()
+                                    .tint(BespokeColor.forest)
+                                    .scaleEffect(1.1)
+                                Text("Loading your saved duas…")
+                                    .font(BespokeFont.inter(16, weight: .medium))
+                                    .foregroundStyle(BespokeColor.muted)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(24)
+                        } else if let error {
+                            ContentUnavailableView {
+                                Label("Couldn’t load", systemImage: "exclamationmark.triangle")
+                            } description: {
+                                Text(error)
+                                    .font(BespokeFont.inter(15, weight: .regular))
+                                    .foregroundStyle(BespokeColor.muted)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(BespokeColor.error.opacity(0.85))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(24)
+                        } else if items.isEmpty {
+                            ContentUnavailableView {
+                                Label("Nothing saved yet", systemImage: "bookmark")
+                            } description: {
+                                Text("When you bookmark a generated dua, it appears here.")
+                                    .font(BespokeFont.inter(15, weight: .regular))
+                                    .foregroundStyle(BespokeColor.muted)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(BespokeColor.muted)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(24)
+                        } else {
+                            VStack(alignment: .leading, spacing: 0) {
                                 Text("Newest first")
                                     .font(BespokeFont.inter(13, weight: .semibold))
                                     .foregroundStyle(BespokeColor.muted)
                                     .textCase(.none)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 20)
+                                    .padding(.bottom, 10)
+
+                                List {
+                                    ForEach(items) { row in
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            Text(Self.dateFormatter.string(from: row.createdAt))
+                                                .font(BespokeFont.inter(13, weight: .semibold))
+                                                .foregroundStyle(BespokeColor.muted)
+                                                .textCase(.uppercase)
+                                                .tracking(0.3)
+
+                                            BespokeDuaCard(
+                                                dua: Self.duaReceiver(from: row),
+                                                isSavedVisual: true
+                                            ) {
+                                                Task { await delete(row) }
+                                            }
+                                        }
+                                        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
+                                        .listRowSeparator(.hidden)
+                                        .listRowBackground(Color.clear)
+                                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                            Button(role: .destructive) {
+                                                Task { await delete(row) }
+                                            } label: {
+                                                Label("Delete", systemImage: "trash")
+                                            }
+                                        }
+                                    }
+                                }
+                                .listStyle(.plain)
+                                .scrollContentBackground(.hidden)
                             }
                         }
-                        .listStyle(.plain)
-                        .scrollContentBackground(.hidden)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1066,22 +1090,25 @@ private struct SavedDuasPageView: View {
         }
     }
 
-    private func savedSampleCard(text: String) -> some View {
-        Text(text)
-            .font(BespokeFont.inter(16, weight: .medium))
-            .foregroundStyle(BespokeColor.forest)
-            .lineSpacing(4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(BespokeColor.cream.opacity(0.95))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(BespokeColor.forest.opacity(0.12), lineWidth: 1)
-            )
-            .shadow(color: BespokeColor.forest.opacity(0.08), radius: 12, x: 0, y: 6)
+    /// `SavedDuas.dua` may be plain text (current app saves `duaText` only) or a JSON object from the server.
+    private static func duaReceiver(from row: SavedDuaDTO) -> DuaReceiver {
+        let raw = row.dua.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard raw.hasPrefix("{"), let data = raw.data(using: .utf8) else {
+            return DuaReceiver(duaText: raw, explanations: [])
+        }
+        struct FlexibleSavedDuaJSON: Decodable {
+            let dua: String?
+            let duaText: String?
+            let explanations: [GeneratedExplanationDTO]?
+        }
+        guard let flex = try? JSONDecoder().decode(FlexibleSavedDuaJSON.self, from: data) else {
+            return DuaReceiver(duaText: raw, explanations: [])
+        }
+        let text = flex.dua ?? flex.duaText ?? raw
+        let exps = (flex.explanations ?? []).map {
+            ExplanationModel(name: $0.name, explanation: $0.explanation)
+        }
+        return DuaReceiver(duaText: text, explanations: exps)
     }
 
     private func load() async {
