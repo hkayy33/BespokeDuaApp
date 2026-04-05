@@ -7,6 +7,7 @@
 
 import Foundation
 
-struct DuaSender: Codable {
+struct DuaSender {
     let inputtedDuaText: String
+    var userId: Int?
 }

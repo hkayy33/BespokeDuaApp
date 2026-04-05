@@ -7,14 +7,26 @@
 
 import Foundation
 
-struct DuaReceiver: Identifiable, Codable {
-    let id = UUID()
+struct DuaReceiver: Identifiable, Sendable {
+    let id: UUID
     let duaText: String
     let explanations: [ExplanationModel]
+
+    init(id: UUID = UUID(), duaText: String, explanations: [ExplanationModel]) {
+        self.id = id
+        self.duaText = duaText
+        self.explanations = explanations
+    }
 }
 
-struct ExplanationModel: Identifiable, Codable {
-    let id = UUID()
+struct ExplanationModel: Identifiable, Sendable {
+    let id: UUID
     let name: String
     let explanation: String
+
+    init(id: UUID = UUID(), name: String, explanation: String) {
+        self.id = id
+        self.name = name
+        self.explanation = explanation
+    }
 }
