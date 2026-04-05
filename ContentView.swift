@@ -815,7 +815,7 @@ private struct AuthModalView: View {
                     }
                 }
             }
-            .frame(maxWidth: 540)
+            .frame(maxWidth: 540, maxHeight: mode == .login ? 450 : 600)
             .background(BespokeColor.authCard)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
