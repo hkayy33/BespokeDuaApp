@@ -838,6 +838,117 @@ private struct UpgradeInfoModalView: View {
     }
 }
 
+// MARK: - Auth password (UIKit; SwiftUI SecureField misbehaves with keyboard / fullScreenCover)
+
+#if canImport(UIKit)
+private struct AuthSecureUITextField: UIViewRepresentable {
+    @Binding var text: String
+
+    func makeUIView(context: Context) -> UITextField {
+        let tf = UITextField()
+        tf.isSecureTextEntry = true
+        tf.autocapitalizationType = .none
+        tf.autocorrectionType = .no
+        // `password` / `newPassword` often triggers AutoFill + “strong password” UI that replaces text and
+        // breaks two-way SwiftUI bridges. Typing must work first; users can still paste from the keychain.
+        tf.textContentType = nil
+        tf.passwordRules = nil
+        tf.keyboardType = .asciiCapable
+        tf.borderStyle = .none
+        tf.backgroundColor = .clear
+        let font = UIFont(name: "Inter-Regular", size: 16) ?? .systemFont(ofSize: 16)
+        tf.font = font
+        tf.textColor = Self.bodyText
+        tf.tintColor = Self.forest
+        tf.attributedPlaceholder = NSAttributedString(
+            string: "Password",
+            attributes: [
+                .foregroundColor: Self.subtle,
+                .font: font,
+            ]
+        )
+        tf.delegate = context.coordinator
+        tf.addTarget(context.coordinator, action: #selector(Coordinator.editingChanged(_:)), for: .editingChanged)
+        context.coordinator.text = $text
+        tf.text = text
+        return tf
+    }
+
+    func updateUIView(_ uiView: UITextField, context: Context) {
+        context.coordinator.text = $text
+        // Do not touch `textContentType` / `passwordRules` here — reapplying can reset secure fields on iOS 18+.
+
+        if context.coordinator.isUserEditing || uiView.isFirstResponder {
+            return
+        }
+        if uiView.text != text {
+            uiView.text = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var text = Binding.constant("")
+
+        /// `isFirstResponder` is unreliable for secure fields; delegate callbacks match actual editing sessions.
+        var isUserEditing = false
+
+        @objc func editingChanged(_ sender: UITextField) {
+            text.wrappedValue = sender.text ?? ""
+        }
+
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            isUserEditing = true
+        }
+
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            isUserEditing = false
+            text.wrappedValue = textField.text ?? ""
+        }
+    }
+
+    private static let bodyText = UIColor(red: 51 / 255, green: 51 / 255, blue: 51 / 255, alpha: 1)
+    private static let subtle = UIColor(red: 136 / 255, green: 136 / 255, blue: 136 / 255, alpha: 1)
+    private static let forest = UIColor(red: 15 / 255, green: 61 / 255, blue: 46 / 255, alpha: 1)
+}
+#endif
+
+/// Isolated from `AppSession` so `@Observable` invalidation does not recreate the UIKit password field every render.
+private struct AuthPasswordInputRow: View {
+    @Binding var password: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Password")
+                .font(BespokeFont.inter(15.2, weight: .bold))
+                .foregroundStyle(BespokeColor.fieldLabel)
+            Group {
+                #if canImport(UIKit)
+                AuthSecureUITextField(text: $password)
+                    .id("authSecurePassword")
+                #else
+                SecureField("Password", text: $password)
+                    .font(BespokeFont.inter(16, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                #endif
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+            .background(BespokeColor.inputSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
+            )
+        }
+    }
+}
+
 // MARK: - Auth modal (`auth-page.scss` + forms)
 
 private struct AuthModalView: View {
@@ -861,6 +972,8 @@ private struct AuthModalView: View {
                 }
 
             VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                VStack(spacing: 0) {
                 HStack(spacing: 6) {
                     authToggleButton(title: "Login", tab: .login)
                     authToggleButton(title: "Register", tab: .register)
@@ -907,13 +1020,7 @@ private struct AuthModalView: View {
                             }
                         )
 
-                        authField(
-                            label: "Password",
-                            content: {
-                                SecureField("", text: $password, prompt: Text("Password").foregroundStyle(BespokeColor.subtle))
-                                    .textContentType(mode == .login ? .password : .newPassword)
-                            }
-                        )
+                        AuthPasswordInputRow(password: $password)
 
                         if let err = session.authError {
                             HStack(alignment: .top, spacing: 10) {
@@ -964,6 +1071,7 @@ private struct AuthModalView: View {
                     }
                     .padding(24)
                 }
+                .scrollDismissesKeyboard(.never)
 
                 if let user = session.currentUser {
                     HStack(alignment: .center) {
@@ -997,17 +1105,22 @@ private struct AuthModalView: View {
                             .frame(height: 1)
                     }
                 }
+                }
+                .frame(maxWidth: 540, maxHeight: mode == .login ? 500 : 650)
+                .background(BespokeColor.authCard)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
+                .padding(16)
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: 540, maxHeight: mode == .login ? 500 : 600)
-            .background(BespokeColor.authCard)
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
-            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .ignoresSafeArea(.keyboard)
     }
 
     private func authToggleButton(title: String, tab: AuthTab) -> some View {
@@ -1035,6 +1148,7 @@ private struct AuthModalView: View {
                 .font(BespokeFont.inter(16, weight: .regular))
                 .foregroundStyle(BespokeColor.bodyText)
                 .padding(16)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                 .background(BespokeColor.inputSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(
