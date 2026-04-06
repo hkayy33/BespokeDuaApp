@@ -595,18 +595,44 @@ struct ContentView: View {
                 try await session.api().deleteSavedDua(id: serverId)
                 savedDuaIDs.remove(dua.id)
                 savedDuaServerIdByLocalId[dua.id] = nil
+                SavedDuaReflectionsCache.remove(userId: uid, duaId: serverId)
             } catch {
                 generateError = "x"
             }
             return
         }
         do {
-            let saved = try await session.api().saveDua(userId: uid, duaText: dua.duaText)
+            let stored = Self.jsonForSavedDuaField(dua)
+            let saved = try await session.api().saveDua(userId: uid, duaText: stored)
             savedDuaIDs.insert(dua.id)
             savedDuaServerIdByLocalId[dua.id] = saved.duaId
+            SavedDuaReflectionsCache.store(userId: uid, duaId: saved.duaId, explanations: dua.explanations)
         } catch {
             generateError = "x"
         }
+    }
+
+    /// Embeds reflections in the `dua` string when the API keeps JSON; `SavedDuaReflectionsCache` also stores them by server id when the API only keeps plain text.
+    private static func jsonForSavedDuaField(_ dua: DuaReceiver) -> String {
+        guard !dua.explanations.isEmpty else { return dua.duaText }
+        struct Payload: Encodable {
+            /// Some backends only persist `duaText` (matches rows in Supabase); keep both so text survives normalization.
+            let dua: String
+            let duaText: String
+            let explanations: [Row]
+            struct Row: Encodable {
+                let name: String
+                let explanation: String
+            }
+        }
+        let rows = dua.explanations.map { Payload.Row(name: $0.name, explanation: $0.explanation) }
+        let text = dua.duaText
+        let payload = Payload(dua: text, duaText: text, explanations: rows)
+        guard let data = try? JSONEncoder().encode(payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return dua.duaText
+        }
+        return str
     }
 }
 
@@ -972,7 +998,7 @@ private struct AuthModalView: View {
                     }
                 }
             }
-            .frame(maxWidth: 540, maxHeight: mode == .login ? 450 : 600)
+            .frame(maxWidth: 540, maxHeight: mode == .login ? 500 : 600)
             .background(BespokeColor.authCard)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
@@ -1036,6 +1062,43 @@ private struct AuthModalView: View {
         case .register:
             await session.register(username: username.trimmingCharacters(in: .whitespacesAndNewlines), email: e, password: p)
         }
+    }
+}
+
+// MARK: - Saved dua reflections cache
+
+/// The API may only persist plain `dua` text; we keep reflections locally by server `duaId` so the Saved tab can still show them.
+private enum SavedDuaReflectionsCache {
+    private static func storageKey(userId: Int, duaId: String) -> String {
+        "bespoke.savedDua.reflections.\(userId).\(duaId)"
+    }
+
+    static func store(userId: Int, duaId: String, explanations: [ExplanationModel]) {
+        if explanations.isEmpty {
+            remove(userId: userId, duaId: duaId)
+            return
+        }
+        struct Row: Codable {
+            let name: String
+            let explanation: String
+        }
+        let rows = explanations.map { Row(name: $0.name, explanation: $0.explanation) }
+        guard let data = try? JSONEncoder().encode(rows) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey(userId: userId, duaId: duaId))
+    }
+
+    static func explanations(userId: Int, duaId: String) -> [ExplanationModel]? {
+        guard let data = UserDefaults.standard.data(forKey: storageKey(userId: userId, duaId: duaId)) else { return nil }
+        struct Row: Codable {
+            let name: String
+            let explanation: String
+        }
+        guard let rows = try? JSONDecoder().decode([Row].self, from: data) else { return nil }
+        return rows.map { ExplanationModel(name: $0.name, explanation: $0.explanation) }
+    }
+
+    static func remove(userId: Int, duaId: String) {
+        UserDefaults.standard.removeObject(forKey: storageKey(userId: userId, duaId: duaId))
     }
 }
 
@@ -1214,7 +1277,7 @@ private struct SavedDuasPageView: View {
                                                 .tracking(0.3)
 
                                             BespokeDuaCard(
-                                                dua: Self.duaReceiver(from: row),
+                                                dua: Self.duaReceiver(from: row, userId: session.currentUser?.userId),
                                                 isSavedVisual: true
                                             ) {
                                                 Task { await delete(row) }
@@ -1247,24 +1310,30 @@ private struct SavedDuasPageView: View {
         }
     }
 
-    /// `SavedDuas.dua` may be plain text (current app saves `duaText` only) or a JSON object from the server.
-    private static func duaReceiver(from row: SavedDuaDTO) -> DuaReceiver {
+    /// `SavedDuas.dua` may be plain text, JSON we encoded, or JSON from the server; reflections also come from `SavedDuaReflectionsCache` when the API drops them.
+    private static func duaReceiver(from row: SavedDuaDTO, userId: Int?) -> DuaReceiver {
         let raw = row.dua.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard raw.hasPrefix("{"), let data = raw.data(using: .utf8) else {
-            return DuaReceiver(duaText: raw, explanations: [])
+        var text = raw
+        var exps: [ExplanationModel] = []
+
+        if raw.hasPrefix("{"), let data = raw.data(using: .utf8) {
+            struct FlexibleSavedDuaJSON: Decodable {
+                let dua: String?
+                let duaText: String?
+                let explanations: [GeneratedExplanationDTO]?
+            }
+            if let flex = try? JSONDecoder().decode(FlexibleSavedDuaJSON.self, from: data) {
+                text = flex.dua ?? flex.duaText ?? raw
+                exps = (flex.explanations ?? []).map {
+                    ExplanationModel(name: $0.name, explanation: $0.explanation)
+                }
+            }
         }
-        struct FlexibleSavedDuaJSON: Decodable {
-            let dua: String?
-            let duaText: String?
-            let explanations: [GeneratedExplanationDTO]?
+
+        if exps.isEmpty, let uid = userId, let cached = SavedDuaReflectionsCache.explanations(userId: uid, duaId: row.duaId), !cached.isEmpty {
+            exps = cached
         }
-        guard let flex = try? JSONDecoder().decode(FlexibleSavedDuaJSON.self, from: data) else {
-            return DuaReceiver(duaText: raw, explanations: [])
-        }
-        let text = flex.dua ?? flex.duaText ?? raw
-        let exps = (flex.explanations ?? []).map {
-            ExplanationModel(name: $0.name, explanation: $0.explanation)
-        }
+
         return DuaReceiver(duaText: text, explanations: exps)
     }
 
@@ -1284,6 +1353,9 @@ private struct SavedDuasPageView: View {
         do {
             try await session.api().deleteSavedDua(id: row.duaId)
             items.removeAll { $0.duaId == row.duaId }
+            if let uid = session.currentUser?.userId {
+                SavedDuaReflectionsCache.remove(userId: uid, duaId: row.duaId)
+            }
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
