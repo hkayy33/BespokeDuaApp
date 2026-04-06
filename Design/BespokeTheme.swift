@@ -2,6 +2,11 @@ import CoreText
 import SwiftUI
 
 enum BespokeColor {
+    /// Launch / splash screen — matches branded artwork background (~`#1b3d2f`).
+    static let splashBackground = Color(red: 27 / 255, green: 61 / 255, blue: 47 / 255)
+    /// Wordmark on splash (~warm tan from brand artwork).
+    static let splashTitle = Color(red: 216 / 255, green: 176 / 255, blue: 140 / 255)
+
     static let pageBackground = Color(red: 250 / 255, green: 250 / 255, blue: 250 / 255)
     static let forest = Color(red: 15 / 255, green: 61 / 255, blue: 46 / 255)
     static let forestHover = Color(red: 13 / 255, green: 53 / 255, blue: 40 / 255)
