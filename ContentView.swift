@@ -13,6 +13,19 @@ import UIKit
 import AppKit
 #endif
 
+// MARK: - Reflection modal (presented from dua cards via environment)
+
+private struct PresentReflectionModalKey: EnvironmentKey {
+    static var defaultValue: (([ExplanationModel]) -> Void)? { nil }
+}
+
+extension EnvironmentValues {
+    var presentReflectionModal: (([ExplanationModel]) -> Void)? {
+        get { self[PresentReflectionModalKey.self] }
+        set { self[PresentReflectionModalKey.self] = newValue }
+    }
+}
+
 struct ContentView: View {
     @Environment(AppSession.self) private var session
     @State private var requestText = ""
@@ -25,6 +38,9 @@ struct ContentView: View {
     @State private var savedDuaIDs: Set<UUID> = []
     @FocusState private var duaFieldFocused: Bool
     @State private var showAccountDrawer = false
+    @State private var showUpgradeInfoModal = false
+    @State private var showReflectionModal = false
+    @State private var reflectionModalExplanations: [ExplanationModel] = []
 
     private enum MainTab: Hashable {
         case home
@@ -85,9 +101,74 @@ struct ContentView: View {
             .tag(MainTab.saved)
         }
         .tint(BespokeColor.forest)
+        .environment(\.presentReflectionModal) { explanations in
+            reflectionModalExplanations = explanations
+            showReflectionModal = true
+        }
         .overlay {
             accountDrawerOverlay
         }
+        .overlay {
+            if showUpgradeInfoModal {
+                UpgradeInfoModalView(isPresented: $showUpgradeInfoModal)
+                    .transition(.opacity)
+            }
+        }
+        .overlay {
+            if showAimModal {
+                BespokeCardModalView(isPresented: $showAimModal, title: "The aim", sizing: .intrinsic) {
+                    Text(
+                        "We often hear, “Make du'a with yaqeen (full conviction),” but how do we do this? By calling upon Allah through His names and attributes, we remind ourselves of His mercy, power, and wisdom."
+                    )
+                    .font(BespokeFont.inter(16, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    Text(
+                        "Bespoke Dua is built on this idea, connecting your personal du'as to the reassuring ropes our Lord has hung down, so you can ask with certainty, hope, and sincerity."
+                    )
+                    .font(BespokeFont.inter(16, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .transition(.opacity)
+            }
+        }
+        .overlay {
+            if showReflectionModal {
+                BespokeCardModalView(
+                    isPresented: Binding(
+                        get: { showReflectionModal },
+                        set: { newValue in
+                            showReflectionModal = newValue
+                            if !newValue { reflectionModalExplanations = [] }
+                        }
+                    ),
+                    title: "Reflection",
+                    sizing: .scrollable(maxHeightRatio: 0.82)
+                ) {
+                    LazyVStack(alignment: .leading, spacing: 20) {
+                        ForEach(reflectionModalExplanations) { exp in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(exp.name)
+                                    .font(BespokeFont.inter(16, weight: .semibold))
+                                    .foregroundStyle(BespokeColor.nameGold)
+                                Text(exp.explanation)
+                                    .font(BespokeFont.inter(15, weight: .regular))
+                                    .foregroundStyle(BespokeColor.bodyText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.28), value: showUpgradeInfoModal)
+        .animation(.easeInOut(duration: 0.28), value: showAimModal)
+        .animation(.easeInOut(duration: 0.28), value: showReflectionModal)
         .onChange(of: session.isLoggedIn) { _, loggedIn in
             if !loggedIn {
                 selectedTab = .home
@@ -170,10 +251,43 @@ struct ContentView: View {
                     .accessibilityHidden(true)
 
                 if session.isLoggedIn {
-                    Text(session.currentUser?.username ?? "Account")
-                        .font(BespokeFont.display(22))
-                        .foregroundStyle(BespokeColor.bodyText)
-                        .multilineTextAlignment(.center)
+                    VStack(spacing: 8) {
+                        Text(session.currentUser?.username ?? "Account")
+                            .font(BespokeFont.display(22))
+                            .foregroundStyle(BespokeColor.bodyText)
+                            .multilineTextAlignment(.center)
+                            .padding(.bottom, 10)
+
+                        if let user = session.currentUser {
+                            Text(accountDrawerPlanHeadline(plan: user.plan))
+                                .font(BespokeFont.inter(15, weight: .semibold))
+                                .foregroundStyle(BespokeColor.forest)
+                                .multilineTextAlignment(.center)
+
+                            if let subtitle = accountDrawerPlanSubtitle(plan: user.plan) {
+                                Text(subtitle)
+                                    .font(BespokeFont.inter(13, weight: .regular))
+                                    .foregroundStyle(BespokeColor.muted)
+                                    .multilineTextAlignment(.center)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                Button {
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                        showAccountDrawer = false
+                                    }
+                                    showUpgradeInfoModal = true
+                                } label: {
+                                    Label("Upgrade", systemImage: "sparkles")
+                                        .font(BespokeFont.inter(16, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(BespokeColor.gold)
+                                .padding(.top, 4)
+                            }
+                        }
+                    }
                 } else {
                     Text("Not signed in")
                         .font(BespokeFont.inter(16, weight: .medium))
@@ -217,6 +331,25 @@ struct ContentView: View {
         .padding(.top, 8)
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private func accountDrawerPlanHeadline(plan: String) -> String {
+        let p = plan.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty || p.caseInsensitiveCompare("free") == .orderedSame {
+            return "Free Plan"
+        }
+        if p.lowercased().hasSuffix("plan") {
+            return "✨ \(p)"
+        }
+        return "✨ \(p) Plan"
+    }
+
+    private func accountDrawerPlanSubtitle(plan: String) -> String? {
+        let p = plan.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty || p.caseInsensitiveCompare("free") == .orderedSame {
+            return "Upgrade for unlimited duas"
+        }
+        return nil
     }
 
     // MARK: - Input (`input-section.scss`)
@@ -323,49 +456,6 @@ struct ContentView: View {
         .padding(.top, 8)
         .padding(.bottom, 24)
         .frame(maxWidth: .infinity)
-        .sheet(isPresented: $showAimModal) {
-            aimSheet
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationCornerRadius(24)
-        }
-    }
-
-    private var aimSheet: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text(
-                        "We often hear, “Make du'a with yaqeen (full conviction),” but how do we do this? By calling upon Allah through His names and attributes, we remind ourselves of His mercy, power, and wisdom."
-                    )
-                    .font(BespokeFont.inter(16, weight: .regular))
-                    .foregroundStyle(BespokeColor.bodyText)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                    Text(
-                        "Bespoke Dua is built on this idea, connecting your personal du'as to the reassuring ropes our Lord has hung down, so you can ask with certainty, hope, and sincerity."
-                    )
-                    .font(BespokeFont.inter(16, weight: .regular))
-                    .foregroundStyle(BespokeColor.bodyText)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-            }
-            .background(BespokeColor.pageBackground)
-            .navigationTitle("The aim")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        showAimModal = false
-                    }
-                    .font(BespokeFont.inter(17, weight: .semibold))
-                    .foregroundStyle(BespokeColor.forest)
-                }
-            }
-        }
     }
 
     // MARK: - Results (`dua-result` + list + card)
@@ -533,11 +623,12 @@ private struct BespokeLoaderDots: View {
 // MARK: - Dua card (`dua-result-card.scss`)
 
 private struct BespokeDuaCard: View {
+    @Environment(\.presentReflectionModal) private var presentReflectionModal
+
     let dua: DuaReceiver
     var isSavedVisual: Bool
     var onSave: () -> Void
 
-    @State private var showExplanations = false
     @State private var copied = false
 
     var body: some View {
@@ -550,7 +641,7 @@ private struct BespokeDuaCard: View {
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
                 Button {
-                    showExplanations = true
+                    presentReflectionModal?(dua.explanations)
                 } label: {
                     Image(systemName: "lightbulb")
                         .font(.system(size: 16))
@@ -601,48 +692,6 @@ private struct BespokeDuaCard: View {
                 .stroke(BespokeColor.cardBorder, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.07), radius: 14, x: 0, y: 6)
-        .sheet(isPresented: $showExplanations) {
-            explanationsSheet
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationCornerRadius(24)
-        }
-    }
-
-    private var explanationsSheet: some View {
-        NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    ForEach(dua.explanations) { exp in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(exp.name)
-                                .font(BespokeFont.inter(16, weight: .semibold))
-                                .foregroundStyle(BespokeColor.nameGold)
-                            Text(exp.explanation)
-                                .font(BespokeFont.inter(15, weight: .regular))
-                                .foregroundStyle(BespokeColor.bodyText)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-            }
-            .background(BespokeColor.pageBackground)
-            .navigationTitle("Reflection")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        showExplanations = false
-                    }
-                    .font(BespokeFont.inter(17, weight: .semibold))
-                    .foregroundStyle(BespokeColor.forest)
-                }
-            }
-        }
     }
 
     private func copyToClipboard(_ text: String) {
@@ -652,6 +701,130 @@ private struct BespokeDuaCard: View {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
         #endif
+    }
+}
+
+// MARK: - Bespoke card modal (upgrade, aim, reflection)
+
+private enum BespokeCardModalSizing {
+    case intrinsic
+    case scrollable(maxHeightRatio: CGFloat)
+}
+
+private struct BespokeCardModalView<Content: View>: View {
+    @Binding var isPresented: Bool
+    let title: String
+    var sizing: BespokeCardModalSizing = .intrinsic
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                BespokeColor.authBackdrop
+                    .ignoresSafeArea()
+                    .background(.ultraThinMaterial.opacity(0.2))
+                    .onTapGesture {
+                        isPresented = false
+                    }
+
+                VStack(spacing: 0) {
+                    HStack {
+                        Spacer(minLength: 0)
+                        Button {
+                            isPresented = false
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.title2)
+                                .symbolRenderingMode(.hierarchical)
+                                .foregroundStyle(BespokeColor.muted)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Close")
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+
+                    Group {
+                        switch sizing {
+                        case .intrinsic:
+                            titleAndContent
+                        case .scrollable(let ratio):
+                            ScrollView {
+                                titleAndContent
+                            }
+                            .frame(maxHeight: geo.size.height * ratio)
+                        }
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24)
+                }
+                .frame(maxWidth: 540)
+                .modifier(BespokeCardModalFrameModifier(sizing: sizing))
+                .background(BespokeColor.authCard)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
+                .padding(16)
+            }
+        }
+    }
+
+    private var titleAndContent: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(title)
+                .font(BespokeFont.inter(29.6, weight: .semibold))
+                .foregroundStyle(BespokeColor.forest)
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct BespokeCardModalFrameModifier: ViewModifier {
+    let sizing: BespokeCardModalSizing
+
+    func body(content: Content) -> some View {
+        switch sizing {
+        case .intrinsic:
+            content.fixedSize(horizontal: false, vertical: true)
+        case .scrollable:
+            content
+        }
+    }
+}
+
+// MARK: - Upgrade info (full-screen modal)
+
+private struct UpgradeInfoModalView: View {
+    @Binding var isPresented: Bool
+
+    private static let instagramURL = URL(string: "https://www.instagram.com/bespoke_dua/")!
+
+    var body: some View {
+        BespokeCardModalView(isPresented: $isPresented, title: "Upgrade", sizing: .intrinsic) {
+            Text(
+                "To keep BespokeDua sustainable and thoughtful for everyone, we'll introduce fair usage limits, with an option to upgrade for unlimited access."
+            )
+            .font(BespokeFont.inter(16, weight: .regular))
+            .foregroundStyle(BespokeColor.bodyText)
+            .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Stay up to date by following us on Instagram")
+                    .font(BespokeFont.inter(16, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Link(destination: Self.instagramURL) {
+                    Text("@bespoke_dua")
+                        .font(BespokeFont.inter(16, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+                }
+            }
+        }
     }
 }
 
