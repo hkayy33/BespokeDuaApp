@@ -9,9 +9,17 @@ import SwiftUI
 
 @main
 struct bespokeDuaApp: App {
+    @State private var session = AppSession()
+
+    init() {
+        BespokeFonts.register()
+    }
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+                .environment(session)
+                .preferredColorScheme(.light)
         }
     }
 }
