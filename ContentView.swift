@@ -71,10 +71,7 @@ struct ContentView: View {
                 .toolbarBackground(.visible, for: .navigationBar)
                 .toolbarColorScheme(.dark, for: .navigationBar)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        accountDrawerToolbarButton()
-                    }
-                    .sharedBackgroundVisibility(.hidden)
+                    accountLeadingToolbar()
                 }
             }
             .tabItem {
@@ -91,10 +88,7 @@ struct ContentView: View {
                 .toolbarBackground(.visible, for: .navigationBar)
                 .toolbarColorScheme(.dark, for: .navigationBar)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        accountDrawerToolbarButton()
-                    }
-                    .sharedBackgroundVisibility(.hidden)
+                    accountLeadingToolbar()
                 }
             }
             .tabItem {
@@ -200,6 +194,20 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .tint(.white)
         .accessibilityLabel("Menu")
+    }
+
+    @ToolbarContentBuilder
+    private func accountLeadingToolbar() -> some ToolbarContent {
+        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
+            ToolbarItem(placement: .topBarLeading) {
+                accountDrawerToolbarButton()
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarLeading) {
+                accountDrawerToolbarButton()
+            }
+        }
     }
 
     private var accountDrawerOverlay: some View {
