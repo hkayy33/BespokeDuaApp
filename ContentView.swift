@@ -36,6 +36,8 @@ struct ContentView: View {
     @State private var emptyRequestWarning = false
     @State private var showAimModal = false
     @State private var savedDuaIDs: Set<UUID> = []
+    /// Server `SavedDuas` id for each generated card, required to DELETE when unsaving.
+    @State private var savedDuaServerIdByLocalId: [UUID: String] = [:]
     @FocusState private var duaFieldFocused: Bool
     @State private var showAccountDrawer = false
     @State private var showUpgradeInfoModal = false
@@ -116,7 +118,7 @@ struct ContentView: View {
         }
         .overlay {
             if showAimModal {
-                BespokeCardModalView(isPresented: $showAimModal, title: "The aim", sizing: .intrinsic) {
+                BespokeCardModalView(isPresented: $showAimModal, title: "The aim") {
                     Text(
                         "We often hear, “Make du'a with yaqeen (full conviction),” but how do we do this? By calling upon Allah through His names and attributes, we remind ourselves of His mercy, power, and wisdom."
                     )
@@ -144,10 +146,9 @@ struct ContentView: View {
                             if !newValue { reflectionModalExplanations = [] }
                         }
                     ),
-                    title: "Reflection",
-                    sizing: .scrollable(maxHeightRatio: 0.82)
+                    title: "Reflection"
                 ) {
-                    LazyVStack(alignment: .leading, spacing: 20) {
+                    VStack(alignment: .leading, spacing: 20) {
                         ForEach(reflectionModalExplanations) { exp in
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(exp.name)
@@ -516,13 +517,15 @@ struct ContentView: View {
                             dua: dua,
                             isSavedVisual: savedDuaIDs.contains(dua.id)
                         ) {
-                            Task { await saveDua(dua) }
+                            Task { await toggleSaveDua(dua) }
                         }
                     }
 
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             generated = []
+                            savedDuaIDs = []
+                            savedDuaServerIdByLocalId = [:]
                         }
                     } label: {
                         Text("Clear results")
@@ -571,20 +574,36 @@ struct ContentView: View {
             let duas = try await session.api().generateDuas(text: trimmed, userId: uid)
             generated = duas
             savedDuaIDs = []
+            savedDuaServerIdByLocalId = [:]
             requestText = ""
         } catch {
             generateError = "x"
         }
     }
 
-    private func saveDua(_ dua: DuaReceiver) async {
+    private func toggleSaveDua(_ dua: DuaReceiver) async {
         guard let uid = session.currentUser?.userId else {
             session.presentAuth()
             return
         }
+        if savedDuaIDs.contains(dua.id) {
+            guard let serverId = savedDuaServerIdByLocalId[dua.id] else {
+                savedDuaIDs.remove(dua.id)
+                return
+            }
+            do {
+                try await session.api().deleteSavedDua(id: serverId)
+                savedDuaIDs.remove(dua.id)
+                savedDuaServerIdByLocalId[dua.id] = nil
+            } catch {
+                generateError = "x"
+            }
+            return
+        }
         do {
-            _ = try await session.api().saveDua(userId: uid, duaText: dua.duaText)
+            let saved = try await session.api().saveDua(userId: uid, duaText: dua.duaText)
             savedDuaIDs.insert(dua.id)
+            savedDuaServerIdByLocalId[dua.id] = saved.duaId
         } catch {
             generateError = "x"
         }
@@ -706,92 +725,57 @@ private struct BespokeDuaCard: View {
 
 // MARK: - Bespoke card modal (upgrade, aim, reflection)
 
-private enum BespokeCardModalSizing {
-    case intrinsic
-    case scrollable(maxHeightRatio: CGFloat)
-}
-
 private struct BespokeCardModalView<Content: View>: View {
     @Binding var isPresented: Bool
     let title: String
-    var sizing: BespokeCardModalSizing = .intrinsic
     @ViewBuilder var content: () -> Content
 
     var body: some View {
-        GeometryReader { geo in
-            ZStack {
-                BespokeColor.authBackdrop
-                    .ignoresSafeArea()
-                    .background(.ultraThinMaterial.opacity(0.2))
-                    .onTapGesture {
-                        isPresented = false
-                    }
-
-                VStack(spacing: 0) {
-                    HStack {
-                        Spacer(minLength: 0)
-                        Button {
-                            isPresented = false
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.title2)
-                                .symbolRenderingMode(.hierarchical)
-                                .foregroundStyle(BespokeColor.muted)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Close")
-                    }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 12)
-
-                    Group {
-                        switch sizing {
-                        case .intrinsic:
-                            titleAndContent
-                        case .scrollable(let ratio):
-                            ScrollView {
-                                titleAndContent
-                            }
-                            .frame(maxHeight: geo.size.height * ratio)
-                        }
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 24)
+        ZStack {
+            BespokeColor.authBackdrop
+                .ignoresSafeArea()
+                .background(.ultraThinMaterial.opacity(0.2))
+                .onTapGesture {
+                    isPresented = false
                 }
-                .frame(maxWidth: 540)
-                .modifier(BespokeCardModalFrameModifier(sizing: sizing))
-                .background(BespokeColor.authCard)
-                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
-                )
-                .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
-                .padding(16)
+
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer(minLength: 0)
+                    Button {
+                        isPresented = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(BespokeColor.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close")
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+
+                VStack(alignment: .leading, spacing: 18) {
+                    Text(title)
+                        .font(BespokeFont.inter(29.6, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+                    content()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
             }
-        }
-    }
-
-    private var titleAndContent: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(title)
-                .font(BespokeFont.inter(29.6, weight: .semibold))
-                .foregroundStyle(BespokeColor.forest)
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-private struct BespokeCardModalFrameModifier: ViewModifier {
-    let sizing: BespokeCardModalSizing
-
-    func body(content: Content) -> some View {
-        switch sizing {
-        case .intrinsic:
-            content.fixedSize(horizontal: false, vertical: true)
-        case .scrollable:
-            content
+            .frame(maxWidth: 540)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(BespokeColor.authCard)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
+            .padding(16)
         }
     }
 }
@@ -804,7 +788,7 @@ private struct UpgradeInfoModalView: View {
     private static let instagramURL = URL(string: "https://www.instagram.com/bespoke_dua/")!
 
     var body: some View {
-        BespokeCardModalView(isPresented: $isPresented, title: "Upgrade", sizing: .intrinsic) {
+        BespokeCardModalView(isPresented: $isPresented, title: "Upgrade") {
             Text(
                 "To keep BespokeDua sustainable and thoughtful for everyone, we'll introduce fair usage limits, with an option to upgrade for unlimited access."
             )
