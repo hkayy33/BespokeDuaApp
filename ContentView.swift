@@ -957,6 +957,12 @@ private struct AuthPasswordInputRow: View {
     }
 }
 
+#if canImport(UIKit)
+private func dismissAuthKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+}
+#endif
+
 // MARK: - Auth modal (`auth-page.scss` + forms)
 
 private struct AuthModalView: View {
@@ -1063,6 +1069,9 @@ private struct AuthModalView: View {
                         }
 
                         Button {
+                            #if canImport(UIKit)
+                            dismissAuthKeyboard()
+                            #endif
                             Task { await submit() }
                         } label: {
                             Text(mode == .login ? "Login" : "Register")
@@ -1079,7 +1088,7 @@ private struct AuthModalView: View {
                     }
                     .padding(24)
                 }
-                .scrollDismissesKeyboard(.never)
+                .scrollDismissesKeyboard(.interactively)
 
                 if let user = session.currentUser {
                     HStack(alignment: .center) {
@@ -1128,11 +1137,13 @@ private struct AuthModalView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .ignoresSafeArea(.keyboard)
     }
 
     private func authToggleButton(title: String, tab: AuthTab) -> some View {
         Button {
+            #if canImport(UIKit)
+            dismissAuthKeyboard()
+            #endif
             mode = tab
             session.authError = nil
         } label: {

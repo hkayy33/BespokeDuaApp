@@ -19,14 +19,14 @@ enum APIBaseURL {
     }
 
     #if DEBUG
-    /// Override: Scheme → Run → Arguments → `BESPOKE_API_BASE_URL` (e.g. `http://192.168.x.x:8080/api`).
+    /// Default: production. Override for local API: Scheme → Run → Arguments → Environment Variables → `BESPOKE_API_BASE_URL` (e.g. `http://127.0.0.1:8080/api` or `http://192.168.x.x:8080/api` on device).
     static var current: URL {
         if let raw = ProcessInfo.processInfo.environment["BESPOKE_API_BASE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty,
            let url = URL(string: raw) {
             return withTrailingSlash(url)
         }
-        return development
+        return withTrailingSlash(production)
     }
     #else
     static var current: URL { withTrailingSlash(production) }
