@@ -132,6 +132,14 @@ struct BespokeAPIClient: Sendable {
         try throwIfNeeded(data: data, response: resp)
     }
 
+    /// `DELETE api/Auth/account`. Backend expects `Authorization: Bearer <userId>` (numeric id as string), not a JWT.
+    func deleteAccount(authorizedUserId userId: Int) async throws {
+        var req = try request(path: "Auth/account", method: "DELETE")
+        req.setValue("Bearer \(userId)", forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await data(for: req)
+        try throwIfNeeded(data: data, response: resp)
+    }
+
     private func throwIfNeeded(data: Data, response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200 ..< 300).contains(http.statusCode) else {

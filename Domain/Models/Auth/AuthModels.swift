@@ -19,6 +19,7 @@ struct RegisterRequest: Encodable, Sendable {
     let password: String
 }
 
+/// Matches `LoginResponseDto`: `{ "message", "user": GetUserDto }`.
 struct LoginResponse: Decodable, Sendable {
     let message: String?
     let user: AuthUser

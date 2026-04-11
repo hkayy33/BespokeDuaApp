@@ -40,6 +40,9 @@ struct ContentView: View {
     @State private var savedDuaServerIdByLocalId: [UUID: String] = [:]
     @FocusState private var duaFieldFocused: Bool
     @State private var showAccountDrawer = false
+    @State private var showDeleteAccountConfirmation = false
+    @State private var deleteAccountInFlight = false
+    @State private var deleteAccountError: String?
     @State private var showUpgradeInfoModal = false
     @State private var showReflectionModal = false
     @State private var reflectionModalExplanations: [ExplanationModel] = []
@@ -111,6 +114,34 @@ struct ContentView: View {
             }
         }
         .overlay {
+            if showDeleteAccountConfirmation {
+                DeleteAccountConfirmationView(
+                    isPresented: $showDeleteAccountConfirmation,
+                    errorMessage: $deleteAccountError,
+                    inFlight: deleteAccountInFlight,
+                    onDelete: {
+                        Task { @MainActor in
+                            deleteAccountInFlight = true
+                            deleteAccountError = nil
+                            defer { deleteAccountInFlight = false }
+                            do {
+                                try await session.deleteAccount()
+                                generated = []
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                    showAccountDrawer = false
+                                }
+                                showDeleteAccountConfirmation = false
+                            } catch {
+                                deleteAccountError =
+                                    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                            }
+                        }
+                    }
+                )
+                .transition(.opacity)
+            }
+        }
+        .overlay {
             if showAimModal {
                 BespokeCardModalView(isPresented: $showAimModal, title: "The aim") {
                     Text(
@@ -162,6 +193,7 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.28), value: showUpgradeInfoModal)
+        .animation(.easeInOut(duration: 0.28), value: showDeleteAccountConfirmation)
         .animation(.easeInOut(duration: 0.28), value: showAimModal)
         .animation(.easeInOut(duration: 0.28), value: showReflectionModal)
         .onChange(of: session.isLoggedIn) { _, loggedIn in
@@ -308,20 +340,34 @@ struct ContentView: View {
             Spacer(minLength: 0)
 
             if session.isLoggedIn {
-                Button(role: .destructive) {
-                    session.logout()
-                    generated = []
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                        showAccountDrawer = false
+                VStack(spacing: 10) {
+                    Button(role: .destructive) {
+                        session.logout()
+                        generated = []
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                            showAccountDrawer = false
+                        }
+                    } label: {
+                        Label("Log out", systemImage: "rectangle.portrait.and.arrow.right")
+                            .font(BespokeFont.inter(16, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
                     }
-                } label: {
-                    Label("Log out", systemImage: "rectangle.portrait.and.arrow.right")
-                        .font(BespokeFont.inter(16, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
+                    .buttonStyle(.bordered)
+                    .tint(BespokeColor.error)
+
+                    Button(role: .destructive) {
+                        deleteAccountError = nil
+                        showDeleteAccountConfirmation = true
+                    } label: {
+                        Text("Delete account")
+                            .font(BespokeFont.inter(14, weight: .medium))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(BespokeColor.error.opacity(0.92))
                 }
-                .buttonStyle(.bordered)
-                .tint(BespokeColor.error)
             } else {
                 Button {
                     showAccountDrawer = false
@@ -810,6 +856,62 @@ private struct BespokeCardModalView<Content: View>: View {
             )
             .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
             .padding(16)
+        }
+    }
+}
+
+// MARK: - Delete account confirmation
+
+private struct DeleteAccountConfirmationView: View {
+    @Binding var isPresented: Bool
+    @Binding var errorMessage: String?
+    var inFlight: Bool
+    let onDelete: () -> Void
+
+    var body: some View {
+        BespokeCardModalView(isPresented: $isPresented, title: "Delete account?") {
+            Text("Permanently delete your account and all data")
+                .font(BespokeFont.inter(16, weight: .regular))
+                .foregroundStyle(BespokeColor.bodyText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let errorMessage, !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(BespokeFont.inter(14, weight: .regular))
+                    .foregroundStyle(BespokeColor.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    errorMessage = nil
+                    isPresented = false
+                } label: {
+                    Text("Cancel")
+                        .font(BespokeFont.inter(16, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .buttonStyle(.bordered)
+                .tint(BespokeColor.forest)
+                .disabled(inFlight)
+
+                Button {
+                    onDelete()
+                } label: {
+                    Text("Delete")
+                        .font(BespokeFont.inter(16, weight: .semibold))
+                        .foregroundStyle(BespokeColor.cream)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(BespokeColor.error)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(inFlight)
+                .opacity(inFlight ? 0.65 : 1)
+            }
+            .padding(.top, 4)
         }
     }
 }

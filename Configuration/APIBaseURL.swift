@@ -1,6 +1,9 @@
 import Foundation
 
 /// Base URL for API calls. Paths in `BespokeAPIClient` are relative to this (e.g. `Dua/generate` → `…/api/Dua/generate`).
+///
+/// - **DEBUG** builds default to `development` (localhost :8080).
+/// - **Release** builds always use `production` (Fly.io).
 enum APIBaseURL {
     /// Matches `bespoke-dua-client` production (`environment.prod.ts`).
     /// Trailing `/` is required: without it, `URL(string: "Auth/login", relativeTo: base)` resolves to `…/Auth/login` instead of `…/api/Auth/login`.
@@ -19,16 +22,19 @@ enum APIBaseURL {
     }
 
     #if DEBUG
-    /// Default: production. Override for local API: Scheme → Run → Arguments → Environment Variables → `BESPOKE_API_BASE_URL` (e.g. `http://127.0.0.1:8080/api` or `http://192.168.x.x:8080/api` on device).
+    /// Default: local .NET API (`development`). Release builds use Fly.io (`production`) automatically.
+    /// Override anytime: Scheme → Run → Arguments → Environment Variables → `BESPOKE_API_BASE_URL`
+    /// (e.g. point at Fly while debugging: `https://bespoke-app.fly.dev/api`, or on a physical device: `http://<Mac-LAN-IP>:8080/api`).
     static var current: URL {
         if let raw = ProcessInfo.processInfo.environment["BESPOKE_API_BASE_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
            !raw.isEmpty,
            let url = URL(string: raw) {
             return withTrailingSlash(url)
         }
-        return withTrailingSlash(production)
+        return withTrailingSlash(development)
     }
     #else
+    /// App Store / release: Fly.io production API.
     static var current: URL { withTrailingSlash(production) }
     #endif
 }
