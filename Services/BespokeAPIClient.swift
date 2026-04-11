@@ -5,7 +5,7 @@ struct BespokeAPIClient: Sendable {
     private let session: URLSession
 
     init(baseURL: URL = APIBaseURL.current, session: URLSession = .shared) {
-        self.baseURL = baseURL
+        self.baseURL = APIBaseURL.withTrailingSlash(baseURL)
         self.session = session
     }
 
@@ -128,6 +128,14 @@ struct BespokeAPIClient: Sendable {
 
     func deleteSavedDua(id: String) async throws {
         let req = try request(path: "SavedDuas/\(id)", method: "DELETE")
+        let (data, resp) = try await data(for: req)
+        try throwIfNeeded(data: data, response: resp)
+    }
+
+    /// `DELETE api/Auth/account`. Backend expects `Authorization: Bearer <userId>` (numeric id as string), not a JWT.
+    func deleteAccount(authorizedUserId userId: Int) async throws {
+        var req = try request(path: "Auth/account", method: "DELETE")
+        req.setValue("Bearer \(userId)", forHTTPHeaderField: "Authorization")
         let (data, resp) = try await data(for: req)
         try throwIfNeeded(data: data, response: resp)
     }
