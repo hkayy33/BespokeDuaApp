@@ -1,0 +1,154 @@
+import Foundation
+import Observation
+import StoreKit
+
+/// Loads the monthly Plus subscription, handles purchases, and reflects active entitlements (StoreKit 2).
+@Observable
+@MainActor
+final class SubscriptionManager {
+    /// Must match the product id in App Store Connect and the local StoreKit configuration file (if used).
+    static let plusMonthlyProductID = "com.Stylistic.bespokeDua.plus.monthly"
+
+    private(set) var product: Product?
+
+    private static let priceLocaleGB = Locale(identifier: "en_GB")
+
+    /// Always shown in GBP (£); `displayPrice` alone follows the device storefront (often $ in the US simulator).
+    var plusMonthlyDisplayPrice: String? {
+        guard let product else { return nil }
+        let formatted = product.price.formatted(
+            .currency(code: "GBP")
+                .locale(Self.priceLocaleGB)
+        )
+        return "\(formatted) / month"
+    }
+
+    private(set) var isSubscribed = false
+    private(set) var loadInFlight = false
+    private(set) var purchaseInFlight = false
+    private(set) var lastErrorMessage: String?
+
+    private var updatesTask: Task<Void, Never>?
+
+    init() {
+        updatesTask = Task { [weak self] in
+            for await result in Transaction.updates {
+                guard let self else { return }
+                await self.handle(transactionResult: result)
+            }
+        }
+        Task { await refreshEntitlements() }
+    }
+
+    func loadProduct() async {
+        loadInFlight = true
+        lastErrorMessage = nil
+        defer { loadInFlight = false }
+        do {
+            // StoreKit sometimes returns an empty array on first query; retry briefly.
+            var loaded: Product?
+            for attempt in 0 ..< 4 {
+                let products = try await Product.products(for: [Self.plusMonthlyProductID])
+                loaded = products.first
+                if loaded != nil { break }
+                if attempt < 3 {
+                    try await Task.sleep(for: .milliseconds(400))
+                }
+            }
+            product = loaded
+            if product == nil {
+                lastErrorMessage = Self.productUnavailableMessage
+            }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    private static var productUnavailableMessage: String {
+        #if DEBUG
+        """
+        Couldn’t load the subscription from the App Store.
+
+        • Run from Xcode with the shared **bespokeDua** scheme (it uses `BespokePlus.storekit`), or
+        • In **Edit Scheme → Run → Options**, set **StoreKit Configuration** to `BespokePlus.storekit`, or
+        • Create product `\(Self.plusMonthlyProductID)` in App Store Connect for device/TestFlight builds.
+        """
+        #else
+        "We couldn’t load subscription options. Check your connection, try again shortly, or create an auto-renewable subscription in App Store Connect for this app."
+        #endif
+    }
+
+    func refreshEntitlements() async {
+        var active = false
+        for await result in Transaction.currentEntitlements {
+            guard case .verified(let transaction) = result else { continue }
+            guard transaction.productID == Self.plusMonthlyProductID else { continue }
+            if transaction.revocationDate == nil {
+                active = true
+            }
+        }
+        isSubscribed = active
+    }
+
+    func purchase() async {
+        guard let product else {
+            lastErrorMessage = "Still loading subscription options…"
+            return
+        }
+        purchaseInFlight = true
+        lastErrorMessage = nil
+        defer { purchaseInFlight = false }
+        do {
+            let result = try await product.purchase()
+            switch result {
+            case .success(let verification):
+                let transaction = try Self.checkVerified(verification)
+                await refreshEntitlements()
+                await transaction.finish()
+            case .userCancelled:
+                break
+            case .pending:
+                lastErrorMessage = "Purchase is waiting for approval."
+            @unknown default:
+                break
+            }
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    func restorePurchases() async {
+        lastErrorMessage = nil
+        do {
+            try await AppStore.sync()
+            await refreshEntitlements()
+        } catch {
+            lastErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func handle(transactionResult: VerificationResult<Transaction>) async {
+        do {
+            let transaction = try Self.checkVerified(transactionResult)
+            if transaction.productID == Self.plusMonthlyProductID {
+                await refreshEntitlements()
+            }
+            await transaction.finish()
+        } catch {
+            lastErrorMessage = "Could not verify the purchase."
+        }
+    }
+
+    private nonisolated static func checkVerified(_ result: VerificationResult<Transaction>) throws -> Transaction {
+        switch result {
+        case .unverified:
+            throw SubscriptionManagerError.failedVerification
+        case .verified(let safe):
+            return safe
+        }
+    }
+}
+
+private enum SubscriptionManagerError: Error {
+    case failedVerification
+}
