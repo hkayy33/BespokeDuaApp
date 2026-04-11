@@ -28,6 +28,8 @@ extension EnvironmentValues {
 
 struct ContentView: View {
     @Environment(AppSession.self) private var session
+    @Environment(SubscriptionManager.self) private var subscriptionManager
+    @Environment(\.scenePhase) private var scenePhase
     @State private var requestText = ""
     @State private var generated: [DuaReceiver] = []
     @State private var generateInFlight = false
@@ -44,6 +46,9 @@ struct ContentView: View {
     @State private var deleteAccountInFlight = false
     @State private var deleteAccountError: String?
     @State private var showUpgradeInfoModal = false
+    @State private var upgradeModalBecauseQuota = false
+    /// Bumps when quota should be re-read from `UserDefaults` (after a generation or app resume).
+    @State private var dailyQuotaRefresh = 0
     @State private var showReflectionModal = false
     @State private var reflectionModalExplanations: [ExplanationModel] = []
 
@@ -109,8 +114,11 @@ struct ContentView: View {
         }
         .overlay {
             if showUpgradeInfoModal {
-                UpgradeInfoModalView(isPresented: $showUpgradeInfoModal)
-                    .transition(.opacity)
+                UpgradeInfoModalView(
+                    isPresented: $showUpgradeInfoModal,
+                    emphasizeDailyLimit: upgradeModalBecauseQuota
+                )
+                .transition(.opacity)
             }
         }
         .overlay {
@@ -200,6 +208,15 @@ struct ContentView: View {
             if !loggedIn {
                 selectedTab = .home
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                dailyQuotaRefresh += 1
+                Task { await subscriptionManager.refreshEntitlements() }
+            }
+        }
+        .onChange(of: showUpgradeInfoModal) { _, shown in
+            if !shown { upgradeModalBecauseQuota = false }
         }
         .fullScreenCover(isPresented: Binding(
             get: { session.showAuthSheet },
@@ -300,19 +317,21 @@ struct ContentView: View {
                             .padding(.bottom, 10)
 
                         if let user = session.currentUser {
-                            Text(accountDrawerPlanHeadline(plan: user.plan))
+                            let subscribed = subscriptionManager.isSubscribed
+                            Text(accountDrawerPlanHeadline(plan: user.plan, isSubscribed: subscribed))
                                 .font(BespokeFont.inter(15, weight: .semibold))
                                 .foregroundStyle(BespokeColor.forest)
                                 .multilineTextAlignment(.center)
 
-                            if let subtitle = accountDrawerPlanSubtitle(plan: user.plan) {
-                                Text(subtitle)
-                                    .font(BespokeFont.inter(13, weight: .regular))
-                                    .foregroundStyle(BespokeColor.muted)
-                                    .multilineTextAlignment(.center)
-                                    .fixedSize(horizontal: false, vertical: true)
+                            Text(accountDrawerPlanSubtitle(isSubscribed: subscribed, userId: user.userId))
+                                .font(BespokeFont.inter(13, weight: .regular))
+                                .foregroundStyle(BespokeColor.muted)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
 
+                            if !subscribed {
                                 Button {
+                                    upgradeModalBecauseQuota = false
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
                                         showAccountDrawer = false
                                     }
@@ -388,7 +407,10 @@ struct ContentView: View {
         .frame(maxHeight: .infinity, alignment: .top)
     }
 
-    private func accountDrawerPlanHeadline(plan: String) -> String {
+    private func accountDrawerPlanHeadline(plan: String, isSubscribed: Bool) -> String {
+        if isSubscribed {
+            return "Bespoke Plus"
+        }
         let p = plan.trimmingCharacters(in: .whitespacesAndNewlines)
         if p.isEmpty || p.caseInsensitiveCompare("free") == .orderedSame {
             return "Free Plan"
@@ -399,12 +421,25 @@ struct ContentView: View {
         return "✨ \(p) Plan"
     }
 
-    private func accountDrawerPlanSubtitle(plan: String) -> String? {
-        let p = plan.trimmingCharacters(in: .whitespacesAndNewlines)
-        if p.isEmpty || p.caseInsensitiveCompare("free") == .orderedSame {
-            return "Upgrade for unlimited duas"
+    private func accountDrawerPlanSubtitle(isSubscribed: Bool, userId: Int) -> String {
+        if isSubscribed {
+            return "Unlimited bespoke duas."
         }
-        return nil
+        let remaining = DailyGenerationQuota.duasRemainingToday(userId: userId)
+        let cap = DailyGenerationQuota.freeDailyLimit
+        return "\(remaining)/\(cap) duas left today · Upgrade for unlimited"
+    }
+
+    /// Free tier has used today’s allowance; primary CTA becomes Upgrade instead of Generate.
+    private var shouldShowUpgradeInsteadOfGenerate: Bool {
+        guard session.isLoggedIn, let uid = session.currentUser?.userId else { return false }
+        guard !subscriptionManager.isSubscribed else { return false }
+        return !DailyGenerationQuota.hasRemainingFreeGenerations(userId: uid)
+    }
+
+    private func presentUpgradeSheetForDailyLimit() {
+        upgradeModalBecauseQuota = true
+        showUpgradeInfoModal = true
     }
 
     // MARK: - Input (`input-section.scss`)
@@ -428,6 +463,27 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
             .padding(.top, 11)
+
+            if session.isLoggedIn, let quotaUid = session.currentUser?.userId, !subscriptionManager.isSubscribed {
+                let remaining = DailyGenerationQuota.duasRemainingToday(userId: quotaUid)
+                let cap = DailyGenerationQuota.freeDailyLimit
+                HStack(spacing: 8) {
+                    Text("\(remaining)/\(cap) duas left")
+                        .font(BespokeFont.inter(15, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+                }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 14)
+                .background(BespokeColor.forest.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(BespokeColor.forest.opacity(0.14), lineWidth: 1)
+                )
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(remaining) of \(cap) free duas left today")
+                .id(dailyQuotaRefresh)
+            }
 
             VStack(alignment: .leading, spacing: 12) {
 
@@ -470,30 +526,53 @@ struct ContentView: View {
             )
             .shadow(color: .black.opacity(0.06), radius: 16, x: 0, y: 6)
 
-            Button {
-                submitGenerate()
-            } label: {
-                HStack(spacing: 10) {
-                    if generateInFlight {
-                        ProgressView()
-                            .tint(.white)
-                        Text("Generating…")
-                            .font(BespokeFont.inter(17, weight: .semibold))
-                    } else {
-                        Text("Bespoke my dua")
-                            .font(BespokeFont.inter(17, weight: .semibold))
+            Group {
+                if shouldShowUpgradeInsteadOfGenerate && !generateInFlight {
+                    Button {
+                        presentUpgradeSheetForDailyLimit()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("Upgrade")
+                                .font(BespokeFont.inter(17, weight: .semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(LinearGradient.bespokeGold)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .shadow(color: .black.opacity(0.14), radius: 12, x: 0, y: 6)
                     }
+                    .buttonStyle(.plain)
+                } else {
+                    Button {
+                        submitGenerate()
+                    } label: {
+                        HStack(spacing: 10) {
+                            if generateInFlight {
+                                ProgressView()
+                                    .tint(.white)
+                                Text("Generating…")
+                                    .font(BespokeFont.inter(17, weight: .semibold))
+                            } else {
+                                Text("Bespoke my dua")
+                                    .font(BespokeFont.inter(17, weight: .semibold))
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(LinearGradient.bespokeGold)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .shadow(color: generateInFlight ? .clear : .black.opacity(0.14), radius: 12, x: 0, y: 6)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(generateInFlight)
+                    .opacity(generateInFlight ? 0.72 : 1)
                 }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(LinearGradient.bespokeGold)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: generateInFlight ? .clear : .black.opacity(0.14), radius: 12, x: 0, y: 6)
             }
-            .buttonStyle(.plain)
-            .disabled(generateInFlight)
-            .opacity(generateInFlight ? 0.72 : 1)
+            .id(dailyQuotaRefresh)
 
             if emptyRequestWarning {
                 Label("Please write your dua first.", systemImage: "exclamationmark.circle.fill")
@@ -608,6 +687,10 @@ struct ContentView: View {
             session.presentAuth()
             return
         }
+        if shouldShowUpgradeInsteadOfGenerate {
+            presentUpgradeSheetForDailyLimit()
+            return
+        }
         let trimmed = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             emptyRequestWarning = true
@@ -630,6 +713,10 @@ struct ContentView: View {
             savedDuaIDs = []
             savedDuaServerIdByLocalId = [:]
             requestText = ""
+            if !subscriptionManager.isSubscribed, let id = session.currentUser?.userId {
+                DailyGenerationQuota.recordGeneration(userId: id)
+                dailyQuotaRefresh += 1
+            }
         } catch {
             generateError = "x"
         }
@@ -919,31 +1006,111 @@ private struct DeleteAccountConfirmationView: View {
 // MARK: - Upgrade info (full-screen modal)
 
 private struct UpgradeInfoModalView: View {
+    @Environment(SubscriptionManager.self) private var subscriptionManager
     @Binding var isPresented: Bool
+    var emphasizeDailyLimit: Bool
 
     private static let instagramURL = URL(string: "https://www.instagram.com/bespoke_dua/")!
 
     var body: some View {
-        BespokeCardModalView(isPresented: $isPresented, title: "Upgrade") {
-            Text(
-                "To keep BespokeDua sustainable and thoughtful for everyone, we'll introduce fair usage limits, with an option to upgrade for unlimited access."
-            )
-            .font(BespokeFont.inter(16, weight: .regular))
-            .foregroundStyle(BespokeColor.bodyText)
-            .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Stay up to date by following us on Instagram")
+        BespokeCardModalView(isPresented: $isPresented, title: "Bespoke Plus") {
+            if subscriptionManager.isSubscribed {
+                Text("You’re subscribed. Enjoy unlimited bespoke duas.")
                     .font(BespokeFont.inter(16, weight: .regular))
                     .foregroundStyle(BespokeColor.bodyText)
                     .fixedSize(horizontal: false, vertical: true)
-
-                Link(destination: Self.instagramURL) {
-                    Text("@bespoke_dua")
-                        .font(BespokeFont.inter(16, weight: .semibold))
-                        .foregroundStyle(BespokeColor.forest)
+            } else {
+                if emphasizeDailyLimit {
+                    Text("You’ve used all \(DailyGenerationQuota.freeDailyLimit) free bespoke duas for today. Subscribe to continue.")
+                        .font(BespokeFont.inter(16, weight: .regular))
+                        .foregroundStyle(BespokeColor.bodyText)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Subscribe for unlimited bespoke duas. Free accounts can create up to \(DailyGenerationQuota.freeDailyLimit) duas per day.")
+                        .font(BespokeFont.inter(16, weight: .regular))
+                        .foregroundStyle(BespokeColor.bodyText)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+
+                Group {
+                    if subscriptionManager.loadInFlight && subscriptionManager.product == nil {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                                .tint(BespokeColor.forest)
+                            Text("Loading subscription…")
+                                .font(BespokeFont.inter(15, weight: .medium))
+                                .foregroundStyle(BespokeColor.muted)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                    } else if let priceLine = subscriptionManager.plusMonthlyDisplayPrice {
+                        Text(priceLine)
+                            .font(BespokeFont.inter(18, weight: .semibold))
+                            .foregroundStyle(BespokeColor.forest)
+                    }
+                }
+
+                if let err = subscriptionManager.lastErrorMessage, !err.isEmpty {
+                    Text(err)
+                        .font(BespokeFont.inter(14, weight: .medium))
+                        .foregroundStyle(BespokeColor.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(spacing: 10) {
+                    Button {
+                        Task { await subscriptionManager.purchase() }
+                    } label: {
+                        Text("Subscribe")
+                            .font(BespokeFont.inter(17, weight: .semibold))
+                            .foregroundStyle(BespokeColor.cream)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(BespokeColor.forest)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
+                    .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
+
+                    Button {
+                        Task { await subscriptionManager.restorePurchases() }
+                    } label: {
+                        Text("Restore purchases")
+                            .font(BespokeFont.inter(15, weight: .semibold))
+                            .foregroundStyle(BespokeColor.forest)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(BespokeColor.forest)
+                    .disabled(subscriptionManager.purchaseInFlight)
+                }
+                .padding(.top, 4)
+
+                Text("Payment will be charged to your Apple ID. Subscription renews monthly until cancelled in Settings.")
+                    .font(BespokeFont.inter(12, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Stay up to date on Instagram")
+                        .font(BespokeFont.inter(15, weight: .regular))
+                        .foregroundStyle(BespokeColor.bodyText)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Link(destination: Self.instagramURL) {
+                        Text("@bespoke_dua")
+                            .font(BespokeFont.inter(15, weight: .semibold))
+                            .foregroundStyle(BespokeColor.forest)
+                    }
+                }
+                .padding(.top, 4)
             }
+        }
+        .task {
+            await subscriptionManager.loadProduct()
+            await subscriptionManager.refreshEntitlements()
         }
     }
 }
@@ -1600,4 +1767,5 @@ private struct SavedDuasPageView: View {
 #Preview {
     ContentView()
         .environment(AppSession())
+        .environment(SubscriptionManager())
 }

@@ -10,6 +10,7 @@ import SwiftUI
 @main
 struct bespokeDuaApp: App {
     @State private var session = AppSession()
+    @State private var subscriptionManager = SubscriptionManager()
     @State private var showMainContent = false
 
     init() {
@@ -22,6 +23,7 @@ struct bespokeDuaApp: App {
                 if showMainContent {
                     ContentView()
                         .environment(session)
+                        .environment(subscriptionManager)
                         .preferredColorScheme(.light)
                         .transition(.opacity)
                 } else {
