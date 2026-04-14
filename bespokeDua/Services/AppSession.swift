@@ -60,6 +60,12 @@ final class AppSession {
         UserDefaults.standard.removeObject(forKey: Self.storageKey)
     }
 
+    func deleteAccount() async throws {
+        guard let user = currentUser else { return }
+        try await client.deleteAccount(authorizedUserId: user.userId)
+        logout()
+    }
+
     private func setUser(_ user: AuthUser) {
         currentUser = user
         if let data = try? JSONEncoder().encode(user) {

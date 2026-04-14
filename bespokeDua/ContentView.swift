@@ -13,8 +13,23 @@ import UIKit
 import AppKit
 #endif
 
+// MARK: - Reflection modal (presented from dua cards via environment)
+
+private struct PresentReflectionModalKey: EnvironmentKey {
+    static var defaultValue: (([ExplanationModel]) -> Void)? { nil }
+}
+
+extension EnvironmentValues {
+    var presentReflectionModal: (([ExplanationModel]) -> Void)? {
+        get { self[PresentReflectionModalKey.self] }
+        set { self[PresentReflectionModalKey.self] = newValue }
+    }
+}
+
 struct ContentView: View {
     @Environment(AppSession.self) private var session
+    @Environment(SubscriptionManager.self) private var subscriptionManager
+    @Environment(\.scenePhase) private var scenePhase
     @State private var requestText = ""
     @State private var generated: [DuaReceiver] = []
     @State private var generateInFlight = false
@@ -23,8 +38,19 @@ struct ContentView: View {
     @State private var emptyRequestWarning = false
     @State private var showAimModal = false
     @State private var savedDuaIDs: Set<UUID> = []
+    /// Server `SavedDuas` id for each generated card, required to DELETE when unsaving.
+    @State private var savedDuaServerIdByLocalId: [UUID: String] = [:]
     @FocusState private var duaFieldFocused: Bool
     @State private var showAccountDrawer = false
+    @State private var showDeleteAccountConfirmation = false
+    @State private var deleteAccountInFlight = false
+    @State private var deleteAccountError: String?
+    @State private var showUpgradeInfoModal = false
+    @State private var upgradeModalBecauseQuota = false
+    /// Bumps when quota should be re-read from `UserDefaults` (after a generation or app resume).
+    @State private var dailyQuotaRefresh = 0
+    @State private var showReflectionModal = false
+    @State private var reflectionModalExplanations: [ExplanationModel] = []
 
     private enum MainTab: Hashable {
         case home
@@ -47,16 +73,13 @@ struct ContentView: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
                 .background(BespokeColor.pageBackground)
-                .navigationTitle("Bespoke Dua")
+                .navigationTitle("BespokeDua")
                 .navigationBarTitleDisplayMode(.large)
                 .toolbarBackground(LinearGradient.bespokeNavBar, for: .navigationBar)
                 .toolbarBackground(.visible, for: .navigationBar)
                 .toolbarColorScheme(.dark, for: .navigationBar)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        accountDrawerToolbarButton()
-                    }
-                    .sharedBackgroundVisibility(.hidden)
+                    accountLeadingToolbar()
                 }
             }
             .tabItem {
@@ -67,16 +90,13 @@ struct ContentView: View {
             NavigationStack {
                 SavedDuasPageView()
                     .background(BespokeColor.pageBackground)
-                    .navigationTitle("My heart's duas")
+                    .navigationTitle("BespokeDua")
                     .navigationBarTitleDisplayMode(.inline)
                 .toolbarBackground(LinearGradient.bespokeNavBar, for: .navigationBar)
                 .toolbarBackground(.visible, for: .navigationBar)
                 .toolbarColorScheme(.dark, for: .navigationBar)
                 .toolbar {
-                    ToolbarItem(placement: .topBarLeading) {
-                        accountDrawerToolbarButton()
-                    }
-                    .sharedBackgroundVisibility(.hidden)
+                    accountLeadingToolbar()
                 }
             }
             .tabItem {
@@ -85,13 +105,118 @@ struct ContentView: View {
             .tag(MainTab.saved)
         }
         .tint(BespokeColor.forest)
+        .environment(\.presentReflectionModal) { explanations in
+            reflectionModalExplanations = explanations
+            showReflectionModal = true
+        }
         .overlay {
             accountDrawerOverlay
         }
+        .overlay {
+            if showUpgradeInfoModal {
+                UpgradeInfoModalView(
+                    isPresented: $showUpgradeInfoModal,
+                    emphasizeDailyLimit: upgradeModalBecauseQuota
+                )
+                .transition(.opacity)
+            }
+        }
+        .overlay {
+            if showDeleteAccountConfirmation {
+                DeleteAccountConfirmationView(
+                    isPresented: $showDeleteAccountConfirmation,
+                    errorMessage: $deleteAccountError,
+                    inFlight: deleteAccountInFlight,
+                    onDelete: {
+                        Task { @MainActor in
+                            deleteAccountInFlight = true
+                            deleteAccountError = nil
+                            defer { deleteAccountInFlight = false }
+                            do {
+                                try await session.deleteAccount()
+                                generated = []
+                                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                    showAccountDrawer = false
+                                }
+                                showDeleteAccountConfirmation = false
+                            } catch {
+                                deleteAccountError =
+                                    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                            }
+                        }
+                    }
+                )
+                .transition(.opacity)
+            }
+        }
+        .overlay {
+            if showAimModal {
+                BespokeCardModalView(isPresented: $showAimModal, title: "The aim") {
+                    Text(
+                        "We often hear, “Make du'a with yaqeen (full conviction),” but how do we do this? By calling upon Allah through His names and attributes, we remind ourselves of His mercy, power, and wisdom."
+                    )
+                    .font(BespokeFont.inter(16, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    Text(
+                        "Bespoke Dua is built on this idea, connecting your personal du'as to the reassuring ropes our Lord has hung down, so you can ask with certainty, hope, and sincerity."
+                    )
+                    .font(BespokeFont.inter(16, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+                .transition(.opacity)
+            }
+        }
+        .overlay {
+            if showReflectionModal {
+                BespokeCardModalView(
+                    isPresented: Binding(
+                        get: { showReflectionModal },
+                        set: { newValue in
+                            showReflectionModal = newValue
+                            if !newValue { reflectionModalExplanations = [] }
+                        }
+                    ),
+                    title: "Reflection"
+                ) {
+                    VStack(alignment: .leading, spacing: 20) {
+                        ForEach(reflectionModalExplanations) { exp in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(exp.name)
+                                    .font(BespokeFont.inter(16, weight: .semibold))
+                                    .foregroundStyle(BespokeColor.nameGold)
+                                Text(exp.explanation)
+                                    .font(BespokeFont.inter(15, weight: .regular))
+                                    .foregroundStyle(BespokeColor.bodyText)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
+                        }
+                    }
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.28), value: showUpgradeInfoModal)
+        .animation(.easeInOut(duration: 0.28), value: showDeleteAccountConfirmation)
+        .animation(.easeInOut(duration: 0.28), value: showAimModal)
+        .animation(.easeInOut(duration: 0.28), value: showReflectionModal)
         .onChange(of: session.isLoggedIn) { _, loggedIn in
             if !loggedIn {
                 selectedTab = .home
             }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                dailyQuotaRefresh += 1
+                Task { await subscriptionManager.refreshEntitlements() }
+            }
+        }
+        .onChange(of: showUpgradeInfoModal) { _, shown in
+            if !shown { upgradeModalBecauseQuota = false }
         }
         .fullScreenCover(isPresented: Binding(
             get: { session.showAuthSheet },
@@ -118,6 +243,20 @@ struct ContentView: View {
         .buttonStyle(.plain)
         .tint(.white)
         .accessibilityLabel("Menu")
+    }
+
+    @ToolbarContentBuilder
+    private func accountLeadingToolbar() -> some ToolbarContent {
+        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
+            ToolbarItem(placement: .topBarLeading) {
+                accountDrawerToolbarButton()
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarLeading) {
+                accountDrawerToolbarButton()
+            }
+        }
     }
 
     private var accountDrawerOverlay: some View {
@@ -170,10 +309,45 @@ struct ContentView: View {
                     .accessibilityHidden(true)
 
                 if session.isLoggedIn {
-                    Text(session.currentUser?.username ?? "Account")
-                        .font(BespokeFont.display(22))
-                        .foregroundStyle(BespokeColor.bodyText)
-                        .multilineTextAlignment(.center)
+                    VStack(spacing: 8) {
+                        Text(session.currentUser?.username ?? "Account")
+                            .font(BespokeFont.display(22))
+                            .foregroundStyle(BespokeColor.bodyText)
+                            .multilineTextAlignment(.center)
+                            .padding(.bottom, 10)
+
+                        if let user = session.currentUser {
+                            let subscribed = subscriptionManager.isSubscribed
+                            Text(accountDrawerPlanHeadline(plan: user.plan, isSubscribed: subscribed))
+                                .font(BespokeFont.inter(15, weight: .semibold))
+                                .foregroundStyle(BespokeColor.forest)
+                                .multilineTextAlignment(.center)
+
+                            Text(accountDrawerPlanSubtitle(isSubscribed: subscribed, userId: user.userId))
+                                .font(BespokeFont.inter(13, weight: .regular))
+                                .foregroundStyle(BespokeColor.muted)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+
+                            if !subscribed {
+                                Button {
+                                    upgradeModalBecauseQuota = false
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                        showAccountDrawer = false
+                                    }
+                                    showUpgradeInfoModal = true
+                                } label: {
+                                    Label("Upgrade", systemImage: "sparkles")
+                                        .font(BespokeFont.inter(16, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                }
+                                .buttonStyle(.borderedProminent)
+                                .tint(BespokeColor.gold)
+                                .padding(.top, 4)
+                            }
+                        }
+                    }
                 } else {
                     Text("Not signed in")
                         .font(BespokeFont.inter(16, weight: .medium))
@@ -185,20 +359,34 @@ struct ContentView: View {
             Spacer(minLength: 0)
 
             if session.isLoggedIn {
-                Button(role: .destructive) {
-                    session.logout()
-                    generated = []
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                        showAccountDrawer = false
+                VStack(spacing: 10) {
+                    Button(role: .destructive) {
+                        session.logout()
+                        generated = []
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                            showAccountDrawer = false
+                        }
+                    } label: {
+                        Label("Log out", systemImage: "rectangle.portrait.and.arrow.right")
+                            .font(BespokeFont.inter(16, weight: .semibold))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
                     }
-                } label: {
-                    Label("Log out", systemImage: "rectangle.portrait.and.arrow.right")
-                        .font(BespokeFont.inter(16, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
+                    .buttonStyle(.bordered)
+                    .tint(BespokeColor.error)
+
+                    Button(role: .destructive) {
+                        deleteAccountError = nil
+                        showDeleteAccountConfirmation = true
+                    } label: {
+                        Text("Delete account")
+                            .font(BespokeFont.inter(14, weight: .medium))
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 10)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(BespokeColor.error.opacity(0.92))
                 }
-                .buttonStyle(.bordered)
-                .tint(BespokeColor.error)
             } else {
                 Button {
                     showAccountDrawer = false
@@ -217,6 +405,41 @@ struct ContentView: View {
         .padding(.top, 8)
         .frame(width: width)
         .frame(maxHeight: .infinity, alignment: .top)
+    }
+
+    private func accountDrawerPlanHeadline(plan: String, isSubscribed: Bool) -> String {
+        if isSubscribed {
+            return "Bespoke Plus"
+        }
+        let p = plan.trimmingCharacters(in: .whitespacesAndNewlines)
+        if p.isEmpty || p.caseInsensitiveCompare("free") == .orderedSame {
+            return "Free Plan"
+        }
+        if p.lowercased().hasSuffix("plan") {
+            return "✨ \(p)"
+        }
+        return "✨ \(p) Plan"
+    }
+
+    private func accountDrawerPlanSubtitle(isSubscribed: Bool, userId: Int) -> String {
+        if isSubscribed {
+            return "Unlimited bespoke duas."
+        }
+        let remaining = DailyGenerationQuota.duasRemainingToday(userId: userId)
+        let cap = DailyGenerationQuota.freeDailyLimit
+        return "\(remaining)/\(cap) duas left today · Upgrade for unlimited"
+    }
+
+    /// Free tier has used today’s allowance; primary CTA becomes Upgrade instead of Generate.
+    private var shouldShowUpgradeInsteadOfGenerate: Bool {
+        guard session.isLoggedIn, let uid = session.currentUser?.userId else { return false }
+        guard !subscriptionManager.isSubscribed else { return false }
+        return !DailyGenerationQuota.hasRemainingFreeGenerations(userId: uid)
+    }
+
+    private func presentUpgradeSheetForDailyLimit() {
+        upgradeModalBecauseQuota = true
+        showUpgradeInfoModal = true
     }
 
     // MARK: - Input (`input-section.scss`)
@@ -240,6 +463,27 @@ struct ContentView: View {
                 .buttonStyle(.plain)
             }
             .padding(.top, 11)
+
+            if session.isLoggedIn, let quotaUid = session.currentUser?.userId, !subscriptionManager.isSubscribed {
+                let remaining = DailyGenerationQuota.duasRemainingToday(userId: quotaUid)
+                let cap = DailyGenerationQuota.freeDailyLimit
+                HStack(spacing: 8) {
+                    Text("\(remaining)/\(cap) duas left")
+                        .font(BespokeFont.inter(15, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+                }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 14)
+                .background(BespokeColor.forest.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(BespokeColor.forest.opacity(0.14), lineWidth: 1)
+                )
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(remaining) of \(cap) free duas left today")
+                .id(dailyQuotaRefresh)
+            }
 
             VStack(alignment: .leading, spacing: 12) {
 
@@ -282,30 +526,53 @@ struct ContentView: View {
             )
             .shadow(color: .black.opacity(0.06), radius: 16, x: 0, y: 6)
 
-            Button {
-                submitGenerate()
-            } label: {
-                HStack(spacing: 10) {
-                    if generateInFlight {
-                        ProgressView()
-                            .tint(.white)
-                        Text("Generating…")
-                            .font(BespokeFont.inter(17, weight: .semibold))
-                    } else {
-                        Text("Bespoke my dua")
-                            .font(BespokeFont.inter(17, weight: .semibold))
+            Group {
+                if shouldShowUpgradeInsteadOfGenerate && !generateInFlight {
+                    Button {
+                        presentUpgradeSheetForDailyLimit()
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 16, weight: .semibold))
+                            Text("Upgrade")
+                                .font(BespokeFont.inter(17, weight: .semibold))
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(LinearGradient.bespokeGold)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .shadow(color: .black.opacity(0.14), radius: 12, x: 0, y: 6)
                     }
+                    .buttonStyle(.plain)
+                } else {
+                    Button {
+                        submitGenerate()
+                    } label: {
+                        HStack(spacing: 10) {
+                            if generateInFlight {
+                                ProgressView()
+                                    .tint(.white)
+                                Text("Generating…")
+                                    .font(BespokeFont.inter(17, weight: .semibold))
+                            } else {
+                                Text("Bespoke my dua")
+                                    .font(BespokeFont.inter(17, weight: .semibold))
+                            }
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background(LinearGradient.bespokeGold)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .shadow(color: generateInFlight ? .clear : .black.opacity(0.14), radius: 12, x: 0, y: 6)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(generateInFlight)
+                    .opacity(generateInFlight ? 0.72 : 1)
                 }
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(LinearGradient.bespokeGold)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .shadow(color: generateInFlight ? .clear : .black.opacity(0.14), radius: 12, x: 0, y: 6)
             }
-            .buttonStyle(.plain)
-            .disabled(generateInFlight)
-            .opacity(generateInFlight ? 0.72 : 1)
+            .id(dailyQuotaRefresh)
 
             if emptyRequestWarning {
                 Label("Please write your dua first.", systemImage: "exclamationmark.circle.fill")
@@ -323,49 +590,6 @@ struct ContentView: View {
         .padding(.top, 8)
         .padding(.bottom, 24)
         .frame(maxWidth: .infinity)
-        .sheet(isPresented: $showAimModal) {
-            aimSheet
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationCornerRadius(24)
-        }
-    }
-
-    private var aimSheet: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text(
-                        "We often hear, “Make du'a with yaqeen (full conviction),” but how do we do this? By calling upon Allah through His names and attributes, we remind ourselves of His mercy, power, and wisdom."
-                    )
-                    .font(BespokeFont.inter(16, weight: .regular))
-                    .foregroundStyle(BespokeColor.bodyText)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                    Text(
-                        "Bespoke Dua is built on this idea, connecting your personal du'as to the reassuring ropes our Lord has hung down, so you can ask with certainty, hope, and sincerity."
-                    )
-                    .font(BespokeFont.inter(16, weight: .regular))
-                    .foregroundStyle(BespokeColor.bodyText)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 8)
-            }
-            .background(BespokeColor.pageBackground)
-            .navigationTitle("The aim")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        showAimModal = false
-                    }
-                    .font(BespokeFont.inter(17, weight: .semibold))
-                    .foregroundStyle(BespokeColor.forest)
-                }
-            }
-        }
     }
 
     // MARK: - Results (`dua-result` + list + card)
@@ -426,13 +650,15 @@ struct ContentView: View {
                             dua: dua,
                             isSavedVisual: savedDuaIDs.contains(dua.id)
                         ) {
-                            Task { await saveDua(dua) }
+                            Task { await toggleSaveDua(dua) }
                         }
                     }
 
                     Button {
                         withAnimation(.easeInOut(duration: 0.2)) {
                             generated = []
+                            savedDuaIDs = []
+                            savedDuaServerIdByLocalId = [:]
                         }
                     } label: {
                         Text("Clear results")
@@ -461,6 +687,10 @@ struct ContentView: View {
             session.presentAuth()
             return
         }
+        if shouldShowUpgradeInsteadOfGenerate {
+            presentUpgradeSheetForDailyLimit()
+            return
+        }
         let trimmed = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             emptyRequestWarning = true
@@ -481,23 +711,69 @@ struct ContentView: View {
             let duas = try await session.api().generateDuas(text: trimmed, userId: uid)
             generated = duas
             savedDuaIDs = []
+            savedDuaServerIdByLocalId = [:]
             requestText = ""
+            if !subscriptionManager.isSubscribed, let id = session.currentUser?.userId {
+                DailyGenerationQuota.recordGeneration(userId: id)
+                dailyQuotaRefresh += 1
+            }
         } catch {
             generateError = "x"
         }
     }
 
-    private func saveDua(_ dua: DuaReceiver) async {
+    private func toggleSaveDua(_ dua: DuaReceiver) async {
         guard let uid = session.currentUser?.userId else {
             session.presentAuth()
             return
         }
+        if savedDuaIDs.contains(dua.id) {
+            guard let serverId = savedDuaServerIdByLocalId[dua.id] else {
+                savedDuaIDs.remove(dua.id)
+                return
+            }
+            do {
+                try await session.api().deleteSavedDua(id: serverId)
+                savedDuaIDs.remove(dua.id)
+                savedDuaServerIdByLocalId[dua.id] = nil
+                SavedDuaReflectionsCache.remove(userId: uid, duaId: serverId)
+            } catch {
+                generateError = "x"
+            }
+            return
+        }
         do {
-            _ = try await session.api().saveDua(userId: uid, duaText: dua.duaText)
+            let stored = Self.jsonForSavedDuaField(dua)
+            let saved = try await session.api().saveDua(userId: uid, duaText: stored)
             savedDuaIDs.insert(dua.id)
+            savedDuaServerIdByLocalId[dua.id] = saved.duaId
+            SavedDuaReflectionsCache.store(userId: uid, duaId: saved.duaId, explanations: dua.explanations)
         } catch {
             generateError = "x"
         }
+    }
+
+    /// Embeds reflections in the `dua` string when the API keeps JSON; `SavedDuaReflectionsCache` also stores them by server id when the API only keeps plain text.
+    private static func jsonForSavedDuaField(_ dua: DuaReceiver) -> String {
+        guard !dua.explanations.isEmpty else { return dua.duaText }
+        struct Payload: Encodable {
+            /// Some backends only persist `duaText` (matches rows in Supabase); keep both so text survives normalization.
+            let dua: String
+            let duaText: String
+            let explanations: [Row]
+            struct Row: Encodable {
+                let name: String
+                let explanation: String
+            }
+        }
+        let rows = dua.explanations.map { Payload.Row(name: $0.name, explanation: $0.explanation) }
+        let text = dua.duaText
+        let payload = Payload(dua: text, duaText: text, explanations: rows)
+        guard let data = try? JSONEncoder().encode(payload),
+              let str = String(data: data, encoding: .utf8) else {
+            return dua.duaText
+        }
+        return str
     }
 }
 
@@ -533,11 +809,12 @@ private struct BespokeLoaderDots: View {
 // MARK: - Dua card (`dua-result-card.scss`)
 
 private struct BespokeDuaCard: View {
+    @Environment(\.presentReflectionModal) private var presentReflectionModal
+
     let dua: DuaReceiver
     var isSavedVisual: Bool
     var onSave: () -> Void
 
-    @State private var showExplanations = false
     @State private var copied = false
 
     var body: some View {
@@ -550,7 +827,7 @@ private struct BespokeDuaCard: View {
             HStack(spacing: 8) {
                 Spacer(minLength: 0)
                 Button {
-                    showExplanations = true
+                    presentReflectionModal?(dua.explanations)
                 } label: {
                     Image(systemName: "lightbulb")
                         .font(.system(size: 16))
@@ -601,48 +878,6 @@ private struct BespokeDuaCard: View {
                 .stroke(BespokeColor.cardBorder, lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.07), radius: 14, x: 0, y: 6)
-        .sheet(isPresented: $showExplanations) {
-            explanationsSheet
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible)
-                .presentationCornerRadius(24)
-        }
-    }
-
-    private var explanationsSheet: some View {
-        NavigationStack {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 20) {
-                    ForEach(dua.explanations) { exp in
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(exp.name)
-                                .font(BespokeFont.inter(16, weight: .semibold))
-                                .foregroundStyle(BespokeColor.nameGold)
-                            Text(exp.explanation)
-                                .font(BespokeFont.inter(15, weight: .regular))
-                                .foregroundStyle(BespokeColor.bodyText)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
-                    }
-                }
-                .padding(.horizontal, 20)
-                .padding(.vertical, 12)
-            }
-            .background(BespokeColor.pageBackground)
-            .navigationTitle("Reflection")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        showExplanations = false
-                    }
-                    .font(BespokeFont.inter(17, weight: .semibold))
-                    .foregroundStyle(BespokeColor.forest)
-                }
-            }
-        }
     }
 
     private func copyToClipboard(_ text: String) {
@@ -654,6 +889,348 @@ private struct BespokeDuaCard: View {
         #endif
     }
 }
+
+// MARK: - Bespoke card modal (upgrade, aim, reflection)
+
+private struct BespokeCardModalView<Content: View>: View {
+    @Binding var isPresented: Bool
+    let title: String
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ZStack {
+            BespokeColor.authBackdrop
+                .ignoresSafeArea()
+                .background(.ultraThinMaterial.opacity(0.2))
+                .onTapGesture {
+                    isPresented = false
+                }
+
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer(minLength: 0)
+                    Button {
+                        isPresented = false
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.title2)
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(BespokeColor.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close")
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+
+                VStack(alignment: .leading, spacing: 18) {
+                    Text(title)
+                        .font(BespokeFont.inter(29.6, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+                    content()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
+            }
+            .frame(maxWidth: 540)
+            .fixedSize(horizontal: false, vertical: true)
+            .background(BespokeColor.authCard)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
+            .padding(16)
+        }
+    }
+}
+
+// MARK: - Delete account confirmation
+
+private struct DeleteAccountConfirmationView: View {
+    @Binding var isPresented: Bool
+    @Binding var errorMessage: String?
+    var inFlight: Bool
+    let onDelete: () -> Void
+
+    var body: some View {
+        BespokeCardModalView(isPresented: $isPresented, title: "Delete account?") {
+            Text("Permanently delete your account and all data")
+                .font(BespokeFont.inter(16, weight: .regular))
+                .foregroundStyle(BespokeColor.bodyText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if let errorMessage, !errorMessage.isEmpty {
+                Text(errorMessage)
+                    .font(BespokeFont.inter(14, weight: .regular))
+                    .foregroundStyle(BespokeColor.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 12) {
+                Button {
+                    errorMessage = nil
+                    isPresented = false
+                } label: {
+                    Text("Cancel")
+                        .font(BespokeFont.inter(16, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+                .buttonStyle(.bordered)
+                .tint(BespokeColor.forest)
+                .disabled(inFlight)
+
+                Button {
+                    onDelete()
+                } label: {
+                    Text("Delete")
+                        .font(BespokeFont.inter(16, weight: .semibold))
+                        .foregroundStyle(BespokeColor.cream)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(BespokeColor.error)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(inFlight)
+                .opacity(inFlight ? 0.65 : 1)
+            }
+            .padding(.top, 4)
+        }
+    }
+}
+
+// MARK: - Upgrade info (full-screen modal)
+
+private struct UpgradeInfoModalView: View {
+    @Environment(SubscriptionManager.self) private var subscriptionManager
+    @Binding var isPresented: Bool
+    var emphasizeDailyLimit: Bool
+
+    private static let instagramURL = URL(string: "https://www.instagram.com/bespoke_dua/")!
+
+    var body: some View {
+        BespokeCardModalView(isPresented: $isPresented, title: "Bespoke Plus") {
+            if subscriptionManager.isSubscribed {
+                Text("You’re subscribed. Enjoy unlimited bespoke duas.")
+                    .font(BespokeFont.inter(16, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                if emphasizeDailyLimit {
+                    Text("You’ve used all \(DailyGenerationQuota.freeDailyLimit) free bespoke duas for today. Subscribe to continue.")
+                        .font(BespokeFont.inter(16, weight: .regular))
+                        .foregroundStyle(BespokeColor.bodyText)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Subscribe for unlimited bespoke duas. Free accounts can create up to \(DailyGenerationQuota.freeDailyLimit) duas per day.")
+                        .font(BespokeFont.inter(16, weight: .regular))
+                        .foregroundStyle(BespokeColor.bodyText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Group {
+                    if subscriptionManager.loadInFlight && subscriptionManager.product == nil {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                                .tint(BespokeColor.forest)
+                            Text("Loading subscription…")
+                                .font(BespokeFont.inter(15, weight: .medium))
+                                .foregroundStyle(BespokeColor.muted)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 4)
+                    } else if let priceLine = subscriptionManager.plusMonthlyDisplayPrice {
+                        Text(priceLine)
+                            .font(BespokeFont.inter(18, weight: .semibold))
+                            .foregroundStyle(BespokeColor.forest)
+                    }
+                }
+
+                if let err = subscriptionManager.lastErrorMessage, !err.isEmpty {
+                    Text(err)
+                        .font(BespokeFont.inter(14, weight: .medium))
+                        .foregroundStyle(BespokeColor.error)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(spacing: 10) {
+                    Button {
+                        Task { await subscriptionManager.purchase() }
+                    } label: {
+                        Text("Subscribe")
+                            .font(BespokeFont.inter(17, weight: .semibold))
+                            .foregroundStyle(BespokeColor.cream)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(BespokeColor.forest)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
+                    .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
+
+                    Button {
+                        Task { await subscriptionManager.restorePurchases() }
+                    } label: {
+                        Text("Restore purchases")
+                            .font(BespokeFont.inter(15, weight: .semibold))
+                            .foregroundStyle(BespokeColor.forest)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(BespokeColor.forest)
+                    .disabled(subscriptionManager.purchaseInFlight)
+                }
+                .padding(.top, 4)
+
+                Text("Payment will be charged to your Apple ID. Subscription renews monthly until cancelled in Settings.")
+                    .font(BespokeFont.inter(12, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Stay up to date on Instagram")
+                        .font(BespokeFont.inter(15, weight: .regular))
+                        .foregroundStyle(BespokeColor.bodyText)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Link(destination: Self.instagramURL) {
+                        Text("@bespoke_dua")
+                            .font(BespokeFont.inter(15, weight: .semibold))
+                            .foregroundStyle(BespokeColor.forest)
+                    }
+                }
+                .padding(.top, 4)
+            }
+        }
+        .task {
+            await subscriptionManager.loadProduct()
+            await subscriptionManager.refreshEntitlements()
+        }
+    }
+}
+
+// MARK: - Auth password (UIKit; SwiftUI SecureField misbehaves with keyboard / fullScreenCover)
+
+#if canImport(UIKit)
+private struct AuthSecureUITextField: UIViewRepresentable {
+    @Binding var text: String
+
+    func makeUIView(context: Context) -> UITextField {
+        let tf = UITextField()
+        tf.isSecureTextEntry = true
+        tf.autocapitalizationType = .none
+        tf.autocorrectionType = .no
+        // `password` / `newPassword` often triggers AutoFill + “strong password” UI that replaces text and
+        // breaks two-way SwiftUI bridges. Typing must work first; users can still paste from the keychain.
+        tf.textContentType = nil
+        tf.passwordRules = nil
+        tf.keyboardType = .asciiCapable
+        tf.borderStyle = .none
+        tf.backgroundColor = .clear
+        let font = UIFont(name: "Inter-Regular", size: 16) ?? .systemFont(ofSize: 16)
+        tf.font = font
+        tf.textColor = Self.bodyText
+        tf.tintColor = Self.forest
+        tf.attributedPlaceholder = NSAttributedString(
+            string: "Password",
+            attributes: [
+                .foregroundColor: Self.subtle,
+                .font: font,
+            ]
+        )
+        tf.delegate = context.coordinator
+        tf.addTarget(context.coordinator, action: #selector(Coordinator.editingChanged(_:)), for: .editingChanged)
+        context.coordinator.text = $text
+        tf.text = text
+        return tf
+    }
+
+    func updateUIView(_ uiView: UITextField, context: Context) {
+        context.coordinator.text = $text
+        // Do not touch `textContentType` / `passwordRules` here — reapplying can reset secure fields on iOS 18+.
+
+        if context.coordinator.isUserEditing || uiView.isFirstResponder {
+            return
+        }
+        if uiView.text != text {
+            uiView.text = text
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    final class Coordinator: NSObject, UITextFieldDelegate {
+        var text = Binding.constant("")
+
+        /// `isFirstResponder` is unreliable for secure fields; delegate callbacks match actual editing sessions.
+        var isUserEditing = false
+
+        @objc func editingChanged(_ sender: UITextField) {
+            text.wrappedValue = sender.text ?? ""
+        }
+
+        func textFieldDidBeginEditing(_ textField: UITextField) {
+            isUserEditing = true
+        }
+
+        func textFieldDidEndEditing(_ textField: UITextField) {
+            isUserEditing = false
+            text.wrappedValue = textField.text ?? ""
+        }
+    }
+
+    private static let bodyText = UIColor(red: 51 / 255, green: 51 / 255, blue: 51 / 255, alpha: 1)
+    private static let subtle = UIColor(red: 136 / 255, green: 136 / 255, blue: 136 / 255, alpha: 1)
+    private static let forest = UIColor(red: 15 / 255, green: 61 / 255, blue: 46 / 255, alpha: 1)
+}
+#endif
+
+/// Isolated from `AppSession` so `@Observable` invalidation does not recreate the UIKit password field every render.
+private struct AuthPasswordInputRow: View {
+    @Binding var password: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Password")
+                .font(BespokeFont.inter(15.2, weight: .bold))
+                .foregroundStyle(BespokeColor.fieldLabel)
+            Group {
+                #if canImport(UIKit)
+                AuthSecureUITextField(text: $password)
+                    .id("authSecurePassword")
+                #else
+                SecureField("Password", text: $password)
+                    .font(BespokeFont.inter(16, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                #endif
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
+            .background(BespokeColor.inputSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
+            )
+        }
+    }
+}
+
+#if canImport(UIKit)
+private func dismissAuthKeyboard() {
+    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+}
+#endif
 
 // MARK: - Auth modal (`auth-page.scss` + forms)
 
@@ -678,6 +1255,8 @@ private struct AuthModalView: View {
                 }
 
             VStack(spacing: 0) {
+                Spacer(minLength: 0)
+                VStack(spacing: 0) {
                 HStack(spacing: 6) {
                     authToggleButton(title: "Login", tab: .login)
                     authToggleButton(title: "Register", tab: .register)
@@ -724,13 +1303,7 @@ private struct AuthModalView: View {
                             }
                         )
 
-                        authField(
-                            label: "Password",
-                            content: {
-                                SecureField("", text: $password, prompt: Text("Password").foregroundStyle(BespokeColor.subtle))
-                                    .textContentType(mode == .login ? .password : .newPassword)
-                            }
-                        )
+                        AuthPasswordInputRow(password: $password)
 
                         if let err = session.authError {
                             HStack(alignment: .top, spacing: 10) {
@@ -765,6 +1338,9 @@ private struct AuthModalView: View {
                         }
 
                         Button {
+                            #if canImport(UIKit)
+                            dismissAuthKeyboard()
+                            #endif
                             Task { await submit() }
                         } label: {
                             Text(mode == .login ? "Login" : "Register")
@@ -781,6 +1357,7 @@ private struct AuthModalView: View {
                     }
                     .padding(24)
                 }
+                .scrollDismissesKeyboard(.interactively)
 
                 if let user = session.currentUser {
                     HStack(alignment: .center) {
@@ -814,21 +1391,28 @@ private struct AuthModalView: View {
                             .frame(height: 1)
                     }
                 }
+                }
+                .frame(maxWidth: 540, maxHeight: mode == .login ? 500 : 650)
+                .background(BespokeColor.authCard)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
+                .padding(16)
+                Spacer(minLength: 0)
             }
-            .frame(maxWidth: 540)
-            .background(BespokeColor.authCard)
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
-            )
-            .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
-            .padding(16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func authToggleButton(title: String, tab: AuthTab) -> some View {
         Button {
+            #if canImport(UIKit)
+            dismissAuthKeyboard()
+            #endif
             mode = tab
             session.authError = nil
         } label: {
@@ -852,6 +1436,7 @@ private struct AuthModalView: View {
                 .font(BespokeFont.inter(16, weight: .regular))
                 .foregroundStyle(BespokeColor.bodyText)
                 .padding(16)
+                .frame(maxWidth: .infinity, minHeight: 48, alignment: .leading)
                 .background(BespokeColor.inputSurface)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 .overlay(
@@ -879,6 +1464,43 @@ private struct AuthModalView: View {
         case .register:
             await session.register(username: username.trimmingCharacters(in: .whitespacesAndNewlines), email: e, password: p)
         }
+    }
+}
+
+// MARK: - Saved dua reflections cache
+
+/// The API may only persist plain `dua` text; we keep reflections locally by server `duaId` so the Saved tab can still show them.
+private enum SavedDuaReflectionsCache {
+    private static func storageKey(userId: Int, duaId: String) -> String {
+        "bespoke.savedDua.reflections.\(userId).\(duaId)"
+    }
+
+    static func store(userId: Int, duaId: String, explanations: [ExplanationModel]) {
+        if explanations.isEmpty {
+            remove(userId: userId, duaId: duaId)
+            return
+        }
+        struct Row: Codable {
+            let name: String
+            let explanation: String
+        }
+        let rows = explanations.map { Row(name: $0.name, explanation: $0.explanation) }
+        guard let data = try? JSONEncoder().encode(rows) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey(userId: userId, duaId: duaId))
+    }
+
+    static func explanations(userId: Int, duaId: String) -> [ExplanationModel]? {
+        guard let data = UserDefaults.standard.data(forKey: storageKey(userId: userId, duaId: duaId)) else { return nil }
+        struct Row: Codable {
+            let name: String
+            let explanation: String
+        }
+        guard let rows = try? JSONDecoder().decode([Row].self, from: data) else { return nil }
+        return rows.map { ExplanationModel(name: $0.name, explanation: $0.explanation) }
+    }
+
+    static func remove(userId: Int, duaId: String) {
+        UserDefaults.standard.removeObject(forKey: storageKey(userId: userId, duaId: duaId))
     }
 }
 
@@ -979,85 +1601,109 @@ private struct SavedDuasPageView: View {
         .padding(.horizontal, 20)
     }
 
+    /// Matches home `inputSection` title styling (`Write your heart’s dua`).
+    private var savedPageHeading: some View {
+        Text("My heart’s dua")
+            .font(BespokeFont.display(26))
+            .foregroundStyle(BespokeColor.forest)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.top, 11)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
+    }
+
     var body: some View {
         Group {
             if !session.isLoggedIn {
                 savedDuasSignedOutContent
             } else {
-                Group {
-                    if loading && items.isEmpty {
-                        VStack(spacing: 16) {
-                            ProgressView()
-                                .tint(BespokeColor.forest)
-                                .scaleEffect(1.1)
-                            Text("Loading your saved duas…")
-                                .font(BespokeFont.inter(16, weight: .medium))
-                                .foregroundStyle(BespokeColor.muted)
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(24)
-                    } else if let error {
-                        ContentUnavailableView {
-                            Label("Couldn’t load", systemImage: "exclamationmark.triangle")
-                        } description: {
-                            Text(error)
-                                .font(BespokeFont.inter(15, weight: .regular))
-                                .foregroundStyle(BespokeColor.muted)
-                                .multilineTextAlignment(.center)
-                        }
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(BespokeColor.error.opacity(0.85))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(24)
-                    } else if items.isEmpty {
-                        ContentUnavailableView {
-                            Label("Nothing saved yet", systemImage: "bookmark")
-                        } description: {
-                            Text("When you bookmark a generated dua, it appears here—newest first.")
-                                .font(BespokeFont.inter(15, weight: .regular))
-                                .foregroundStyle(BespokeColor.muted)
-                                .multilineTextAlignment(.center)
-                        }
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(BespokeColor.muted)
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .padding(24)
-                    } else {
-                        List {
-                            Section {
-                                ForEach(items) { row in
-                                    VStack(alignment: .leading, spacing: 10) {
-                                        Text(Self.dateFormatter.string(from: row.createdAt))
-                                            .font(BespokeFont.inter(13, weight: .semibold))
-                                            .foregroundStyle(BespokeColor.muted)
-                                            .textCase(.uppercase)
-                                            .tracking(0.3)
+                VStack(spacing: 0) {
+                    savedPageHeading
 
-                                        savedSampleCard(text: row.dua)
-                                    }
-                                    .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
-                                    .listRowSeparator(.hidden)
-                                    .listRowBackground(Color.clear)
-                                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                        Button(role: .destructive) {
-                                            Task { await delete(row) }
-                                        } label: {
-                                            Label("Delete", systemImage: "trash")
-                                        }
-                                    }
-                                }
-                            } header: {
+                    Group {
+                        if loading && items.isEmpty {
+                            VStack(spacing: 16) {
+                                ProgressView()
+                                    .tint(BespokeColor.forest)
+                                    .scaleEffect(1.1)
+                                Text("Loading your saved duas…")
+                                    .font(BespokeFont.inter(16, weight: .medium))
+                                    .foregroundStyle(BespokeColor.muted)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(24)
+                        } else if let error {
+                            ContentUnavailableView {
+                                Label("Couldn’t load", systemImage: "exclamationmark.triangle")
+                            } description: {
+                                Text(error)
+                                    .font(BespokeFont.inter(15, weight: .regular))
+                                    .foregroundStyle(BespokeColor.muted)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(BespokeColor.error.opacity(0.85))
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(24)
+                        } else if items.isEmpty {
+                            ContentUnavailableView {
+                                Label("Nothing saved yet", systemImage: "bookmark")
+                            } description: {
+                                Text("When you bookmark a generated dua, it appears here.")
+                                    .font(BespokeFont.inter(15, weight: .regular))
+                                    .foregroundStyle(BespokeColor.muted)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .symbolRenderingMode(.hierarchical)
+                            .foregroundStyle(BespokeColor.muted)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(24)
+                        } else {
+                            VStack(alignment: .leading, spacing: 0) {
                                 Text("Newest first")
                                     .font(BespokeFont.inter(13, weight: .semibold))
                                     .foregroundStyle(BespokeColor.muted)
                                     .textCase(.none)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 20)
+                                    .padding(.bottom, 10)
+
+                                List {
+                                    ForEach(items) { row in
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            Text(Self.dateFormatter.string(from: row.createdAt))
+                                                .font(BespokeFont.inter(13, weight: .semibold))
+                                                .foregroundStyle(BespokeColor.muted)
+                                                .textCase(.uppercase)
+                                                .tracking(0.3)
+
+                                            BespokeDuaCard(
+                                                dua: Self.duaReceiver(from: row, userId: session.currentUser?.userId),
+                                                isSavedVisual: true
+                                            ) {
+                                                Task { await delete(row) }
+                                            }
+                                        }
+                                        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
+                                        .listRowSeparator(.hidden)
+                                        .listRowBackground(Color.clear)
+                                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                            Button(role: .destructive) {
+                                                Task { await delete(row) }
+                                            } label: {
+                                                Label("Delete", systemImage: "trash")
+                                            }
+                                        }
+                                    }
+                                }
+                                .listStyle(.plain)
+                                .scrollContentBackground(.hidden)
                             }
                         }
-                        .listStyle(.plain)
-                        .scrollContentBackground(.hidden)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1066,22 +1712,31 @@ private struct SavedDuasPageView: View {
         }
     }
 
-    private func savedSampleCard(text: String) -> some View {
-        Text(text)
-            .font(BespokeFont.inter(16, weight: .medium))
-            .foregroundStyle(BespokeColor.forest)
-            .lineSpacing(4)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(BespokeColor.cream.opacity(0.95))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .stroke(BespokeColor.forest.opacity(0.12), lineWidth: 1)
-            )
-            .shadow(color: BespokeColor.forest.opacity(0.08), radius: 12, x: 0, y: 6)
+    /// `SavedDuas.dua` may be plain text, JSON we encoded, or JSON from the server; reflections also come from `SavedDuaReflectionsCache` when the API drops them.
+    private static func duaReceiver(from row: SavedDuaDTO, userId: Int?) -> DuaReceiver {
+        let raw = row.dua.trimmingCharacters(in: .whitespacesAndNewlines)
+        var text = raw
+        var exps: [ExplanationModel] = []
+
+        if raw.hasPrefix("{"), let data = raw.data(using: .utf8) {
+            struct FlexibleSavedDuaJSON: Decodable {
+                let dua: String?
+                let duaText: String?
+                let explanations: [GeneratedExplanationDTO]?
+            }
+            if let flex = try? JSONDecoder().decode(FlexibleSavedDuaJSON.self, from: data) {
+                text = flex.dua ?? flex.duaText ?? raw
+                exps = (flex.explanations ?? []).map {
+                    ExplanationModel(name: $0.name, explanation: $0.explanation)
+                }
+            }
+        }
+
+        if exps.isEmpty, let uid = userId, let cached = SavedDuaReflectionsCache.explanations(userId: uid, duaId: row.duaId), !cached.isEmpty {
+            exps = cached
+        }
+
+        return DuaReceiver(duaText: text, explanations: exps)
     }
 
     private func load() async {
@@ -1100,6 +1755,9 @@ private struct SavedDuasPageView: View {
         do {
             try await session.api().deleteSavedDua(id: row.duaId)
             items.removeAll { $0.duaId == row.duaId }
+            if let uid = session.currentUser?.userId {
+                SavedDuaReflectionsCache.remove(userId: uid, duaId: row.duaId)
+            }
         } catch {
             self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -1109,4 +1767,5 @@ private struct SavedDuasPageView: View {
 #Preview {
     ContentView()
         .environment(AppSession())
+        .environment(SubscriptionManager())
 }

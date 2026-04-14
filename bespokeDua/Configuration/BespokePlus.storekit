@@ -1,0 +1,55 @@
+{
+  "identifier" : "B3505K01",
+  "nonRenewingSubscriptions" : [
+
+  ],
+  "products" : [
+
+  ],
+  "settings" : {
+    "_failTransactionsEnabled" : false,
+    "_storeKitErrors" : [
+
+    ]
+  },
+  "subscriptionGroups" : [
+    {
+      "id" : "B3505GRP1",
+      "localizations" : [
+
+      ],
+      "name" : "Bespoke Plus",
+      "subscriptions" : [
+        {
+          "adHocOffers" : [
+
+          ],
+          "codeOffers" : [
+
+          ],
+          "displayPrice" : "3.99",
+          "familyShareable" : false,
+          "groupNumber" : 1,
+          "internalID" : "B3505UB1",
+          "introductoryOffer" : null,
+          "localizations" : [
+            {
+              "description" : "Unlimited bespoke dua generations every month.",
+              "displayName" : "Bespoke Plus Monthly",
+              "locale" : "en_GB"
+            }
+          ],
+          "productID" : "com.Stylistic.bespokeDua.plus.monthly",
+          "recurringSubscriptionPeriod" : "P1M",
+          "referenceName" : "Plus Monthly",
+          "subscriptionGroupID" : "B3505GRP1",
+          "type" : "RecurringSubscription"
+        }
+      ]
+    }
+  ],
+  "version" : {
+    "major" : 2,
+    "minor" : 0
+  }
+}
