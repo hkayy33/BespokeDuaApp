@@ -140,6 +140,29 @@ struct BespokeAPIClient: Sendable {
         try throwIfNeeded(data: data, response: resp)
     }
 
+    /// `PATCH api/Plan/subscribe`. Sends Apple linkage metadata for strict account ownership checks.
+    func subscribePlan(
+        authorizedUserId userId: Int,
+        originalTransactionId: String?,
+        productId: String = SubscriptionManager.plusMonthlyProductID,
+        confirmTransfer: Bool = false
+    ) async throws -> AuthUser {
+        let body = SubscribePlanRequest(
+            originalTransactionId: originalTransactionId,
+            productId: productId,
+            confirmTransfer: confirmTransfer
+        )
+        var req = try request(path: "Plan/subscribe", method: "PATCH", body: body)
+        req.setValue("Bearer \(userId)", forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await data(for: req)
+        try throwIfNeeded(data: data, response: resp)
+        do {
+            return try Self.makeDecoder().decode(AuthUser.self, from: data)
+        } catch {
+            throw BespokeAPIError.decoding(error)
+        }
+    }
+
     private func throwIfNeeded(data: Data, response: URLResponse) throws {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200 ..< 300).contains(http.statusCode) else {
