@@ -207,12 +207,21 @@ struct ContentView: View {
         .onChange(of: session.isLoggedIn) { _, loggedIn in
             if !loggedIn {
                 selectedTab = .home
+                subscriptionManager.clearDatabaseSubscriptionStatus()
+            } else {
+                subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
             }
+        }
+        .onChange(of: session.currentUser?.plan) { _, plan in
+            subscriptionManager.updateDatabaseSubscriptionStatus(plan: plan)
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
                 dailyQuotaRefresh += 1
-                Task { await subscriptionManager.refreshEntitlements() }
+                Task {
+                    subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
+                    await subscriptionManager.refreshEntitlements()
+                }
             }
         }
         .onChange(of: showUpgradeInfoModal) { _, shown in
@@ -224,6 +233,10 @@ struct ContentView: View {
         )) {
             AuthModalView()
                 .environment(session)
+        }
+        .task(id: session.currentUser?.userId) {
+            subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
+            await subscriptionManager.refreshEntitlements()
         }
     }
 
@@ -447,7 +460,7 @@ struct ContentView: View {
     private var inputSection: some View {
         VStack(spacing: 16) {
             VStack(spacing: 8) {
-                Text("Write your heart’s dua")
+                Text("Write your heart’s duas")
                     .font(BespokeFont.display(26))
                     .foregroundStyle(BespokeColor.forest)
                     .multilineTextAlignment(.center)
@@ -1006,11 +1019,17 @@ private struct DeleteAccountConfirmationView: View {
 // MARK: - Upgrade info (full-screen modal)
 
 private struct UpgradeInfoModalView: View {
+    @Environment(AppSession.self) private var session
     @Environment(SubscriptionManager.self) private var subscriptionManager
     @Binding var isPresented: Bool
+    @State private var showTransferConfirmation = false
     var emphasizeDailyLimit: Bool
 
-    private static let instagramURL = URL(string: "https://www.instagram.com/bespoke_dua/")!
+    private static let privacyPolicyURL = URL(
+        string: "https://www.notion.so/bespoke-dua/Privacy-Policy-Bespoke-Dua-33a1b4628d358095817dcd58027872bd?source=copy_link"
+    )!
+    /// Standard Apple Terms of Use (EULA) for auto-renewable subscriptions.
+    private static let appleStandardEULAURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
 
     var body: some View {
         BespokeCardModalView(isPresented: $isPresented, title: "Bespoke Plus") {
@@ -1058,23 +1077,56 @@ private struct UpgradeInfoModalView: View {
                 }
 
                 VStack(spacing: 10) {
-                    Button {
-                        Task { await subscriptionManager.purchase() }
-                    } label: {
-                        Text("Subscribe")
-                            .font(BespokeFont.inter(17, weight: .semibold))
-                            .foregroundStyle(BespokeColor.cream)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(BespokeColor.forest)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    if !subscriptionManager.hasActiveAppleSubscription {
+                        Button {
+                            Task {
+                                await subscriptionManager.purchase()
+                                guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
+                                do {
+                                    try await session.syncSubscribedPlan(
+                                        originalTransactionId: subscriptionManager.appleOriginalTransactionID
+                                    )
+                                } catch {
+                                    subscriptionManager.setSyncErrorMessage(
+                                        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                                    )
+                                }
+                            }
+                        } label: {
+                            Text("Subscribe")
+                                .font(BespokeFont.inter(17, weight: .semibold))
+                                .foregroundStyle(BespokeColor.cream)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 16)
+                                .background(BespokeColor.forest)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
+                        .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
                     }
-                    .buttonStyle(.plain)
-                    .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
-                    .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
 
                     Button {
-                        Task { await subscriptionManager.restorePurchases() }
+                        Task {
+                            await subscriptionManager.restorePurchases()
+                            guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
+                            do {
+                                try await session.syncSubscribedPlan(
+                                    originalTransactionId: subscriptionManager.appleOriginalTransactionID
+                                )
+                                showTransferConfirmation = false
+                            } catch {
+                                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                                if message.localizedCaseInsensitiveContains("confirm transfer") {
+                                    showTransferConfirmation = true
+                                    subscriptionManager.setSyncErrorMessage(
+                                        "This Apple subscription is linked to another account. Confirm transfer to move it here."
+                                    )
+                                } else {
+                                    subscriptionManager.setSyncErrorMessage(message)
+                                }
+                            }
+                        }
                     } label: {
                         Text("Restore purchases")
                             .font(BespokeFont.inter(15, weight: .semibold))
@@ -1085,6 +1137,36 @@ private struct UpgradeInfoModalView: View {
                     .buttonStyle(.bordered)
                     .tint(BespokeColor.forest)
                     .disabled(subscriptionManager.purchaseInFlight)
+
+                    if showTransferConfirmation {
+                        Button {
+                            Task {
+                                guard session.isLoggedIn else { return }
+                                do {
+                                    try await session.syncSubscribedPlan(
+                                        originalTransactionId: subscriptionManager.appleOriginalTransactionID,
+                                        confirmTransfer: true
+                                    )
+                                    showTransferConfirmation = false
+                                } catch {
+                                    subscriptionManager.setSyncErrorMessage(
+                                        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                                    )
+                                }
+                            }
+                        } label: {
+                            Text("Confirm transfer to this account")
+                                .font(BespokeFont.inter(15, weight: .semibold))
+                                .foregroundStyle(BespokeColor.cream)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 12)
+                                .background(BespokeColor.error)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(subscriptionManager.purchaseInFlight)
+                        .opacity(subscriptionManager.purchaseInFlight ? 0.55 : 1)
+                    }
                 }
                 .padding(.top, 4)
 
@@ -1093,22 +1175,23 @@ private struct UpgradeInfoModalView: View {
                     .foregroundStyle(BespokeColor.muted)
                     .fixedSize(horizontal: false, vertical: true)
 
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("Stay up to date on Instagram")
-                        .font(BespokeFont.inter(15, weight: .regular))
-                        .foregroundStyle(BespokeColor.bodyText)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack {
+                    HStack(spacing: 18) {
+                        Link("Privacy Policy", destination: Self.privacyPolicyURL)
+                            .font(BespokeFont.inter(15, weight: .semibold))
+                            .foregroundStyle(BespokeColor.forest)
 
-                    Link(destination: Self.instagramURL) {
-                        Text("@bespoke_dua")
+                        Link("Terms of Use (EULA)", destination: Self.appleStandardEULAURL)
                             .font(BespokeFont.inter(15, weight: .semibold))
                             .foregroundStyle(BespokeColor.forest)
                     }
                 }
+                .frame(maxWidth: .infinity)
                 .padding(.top, 4)
             }
         }
         .task {
+            subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
             await subscriptionManager.loadProduct()
             await subscriptionManager.refreshEntitlements()
         }

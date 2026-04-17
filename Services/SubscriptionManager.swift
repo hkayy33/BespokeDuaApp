@@ -7,7 +7,7 @@ import StoreKit
 @MainActor
 final class SubscriptionManager {
     /// Must match the product id in App Store Connect and the local StoreKit configuration file (if used).
-    static let plusMonthlyProductID = "com.Stylistic.bespokeDua.plus.monthly"
+    static let plusMonthlyProductID = "com.Stylistic.bespokeDua.subscription.monthly"
 
     private(set) var product: Product?
 
@@ -24,6 +24,9 @@ final class SubscriptionManager {
     }
 
     private(set) var isSubscribed = false
+    private(set) var hasActiveAppleSubscription = false
+    private(set) var hasActiveDatabaseSubscription = false
+    private(set) var appleOriginalTransactionID: String?
     private(set) var loadInFlight = false
     private(set) var purchaseInFlight = false
     private(set) var lastErrorMessage: String?
@@ -80,14 +83,29 @@ final class SubscriptionManager {
 
     func refreshEntitlements() async {
         var active = false
+        var linkedOriginalID: String?
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             guard transaction.productID == Self.plusMonthlyProductID else { continue }
             if transaction.revocationDate == nil {
                 active = true
+                linkedOriginalID = String(transaction.originalID)
             }
         }
-        isSubscribed = active
+        hasActiveAppleSubscription = active
+        appleOriginalTransactionID = linkedOriginalID
+        recomputeEffectiveSubscription()
+    }
+
+    func updateDatabaseSubscriptionStatus(plan: String?) {
+        let normalized = plan?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        hasActiveDatabaseSubscription = normalized == "subscribed" || normalized == "bespoke plus"
+        recomputeEffectiveSubscription()
+    }
+
+    func clearDatabaseSubscriptionStatus() {
+        hasActiveDatabaseSubscription = false
+        recomputeEffectiveSubscription()
     }
 
     func purchase() async {
@@ -103,6 +121,7 @@ final class SubscriptionManager {
             switch result {
             case .success(let verification):
                 let transaction = try Self.checkVerified(verification)
+                appleOriginalTransactionID = String(transaction.originalID)
                 await refreshEntitlements()
                 await transaction.finish()
             case .userCancelled:
@@ -125,6 +144,17 @@ final class SubscriptionManager {
         } catch {
             lastErrorMessage = error.localizedDescription
         }
+    }
+
+    func setSyncErrorMessage(_ message: String) {
+        lastErrorMessage = message
+    }
+
+    private func recomputeEffectiveSubscription() {
+        // Access is account-scoped: the signed-in account's backend plan decides Plus access.
+        // Apple entitlement is still tracked for purchase/restore flows, but it should not
+        // automatically unlock other accounts on the same device.
+        isSubscribed = hasActiveDatabaseSubscription
     }
 
     private func handle(transactionResult: VerificationResult<Transaction>) async {

@@ -66,6 +66,16 @@ final class AppSession {
         logout()
     }
 
+    func syncSubscribedPlan(originalTransactionId: String?, confirmTransfer: Bool = false) async throws {
+        guard let user = currentUser else { return }
+        let updatedUser = try await client.subscribePlan(
+            authorizedUserId: user.userId,
+            originalTransactionId: originalTransactionId,
+            confirmTransfer: confirmTransfer
+        )
+        setUser(updatedUser)
+    }
+
     private func setUser(_ user: AuthUser) {
         currentUser = user
         if let data = try? JSONEncoder().encode(user) {

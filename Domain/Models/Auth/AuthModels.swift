@@ -56,6 +56,12 @@ struct GenerateDuaRequestBody: Encodable, Sendable {
     let userId: Int?
 }
 
+struct SubscribePlanRequest: Encodable, Sendable {
+    let originalTransactionId: String?
+    let productId: String
+    let confirmTransfer: Bool
+}
+
 enum BespokeAPIError: LocalizedError, Sendable {
     case invalidURL
     case status(Int, String?)

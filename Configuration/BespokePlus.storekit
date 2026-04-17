@@ -39,7 +39,7 @@
               "locale" : "en_GB"
             }
           ],
-          "productID" : "com.Stylistic.bespokeDua.plus.monthly",
+          "productID" : "com.Stylistic.bespokeDua.subscription.monthly",
           "recurringSubscriptionPeriod" : "P1M",
           "referenceName" : "Plus Monthly",
           "subscriptionGroupID" : "B3505GRP1",
