@@ -1077,34 +1077,35 @@ private struct UpgradeInfoModalView: View {
                 }
 
                 VStack(spacing: 10) {
-                    if !subscriptionManager.hasActiveAppleSubscription {
-                        Button {
-                            Task {
-                                await subscriptionManager.purchase()
-                                guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
-                                do {
-                                    try await session.syncSubscribedPlan(
-                                        originalTransactionId: subscriptionManager.appleOriginalTransactionID
-                                    )
-                                } catch {
-                                    subscriptionManager.setSyncErrorMessage(
-                                        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                                    )
-                                }
+                    // Always offer Subscribe when this account is not Plus. Device-level Apple
+                    // entitlements can remain from sandbox or another App Store account; gating
+                    // Subscribe on `hasActiveAppleSubscription` hid the button in those cases.
+                    Button {
+                        Task {
+                            await subscriptionManager.purchase()
+                            guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
+                            do {
+                                try await session.syncSubscribedPlan(
+                                    originalTransactionId: subscriptionManager.appleOriginalTransactionID
+                                )
+                            } catch {
+                                subscriptionManager.setSyncErrorMessage(
+                                    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                                )
                             }
-                        } label: {
-                            Text("Subscribe")
-                                .font(BespokeFont.inter(17, weight: .semibold))
-                                .foregroundStyle(BespokeColor.cream)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
-                                .background(BespokeColor.forest)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
-                        .buttonStyle(.plain)
-                        .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
-                        .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
+                    } label: {
+                        Text("Subscribe")
+                            .font(BespokeFont.inter(17, weight: .semibold))
+                            .foregroundStyle(BespokeColor.cream)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(BespokeColor.forest)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
+                    .buttonStyle(.plain)
+                    .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
+                    .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
 
                     Button {
                         Task {
