@@ -40,7 +40,7 @@ final class SubscriptionManager {
                 await self.handle(transactionResult: result)
             }
         }
-        Task { await refreshEntitlements() }
+        // `refreshEntitlements()` runs from `ContentView` (.task / scene active) and upgrade modal — avoid duplicate work at launch.
     }
 
     func loadProduct() async {

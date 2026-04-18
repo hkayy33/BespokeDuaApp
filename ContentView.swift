@@ -794,7 +794,8 @@ struct ContentView: View {
 
 private struct BespokeLoaderDots: View {
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { context in
+        // ~8 updates/sec is enough for the pulse; 30/sec was unnecessary main-thread work during generation.
+        TimelineView(.animation(minimumInterval: 0.12, paused: false)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(spacing: 8) {
                 ForEach(0 ..< 3, id: \.self) { i in
