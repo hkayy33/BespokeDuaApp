@@ -1384,9 +1384,13 @@ private struct AuthModalView: View {
                                 TextField("", text: $email, prompt: Text("Email").foregroundStyle(BespokeColor.subtle))
                                     .textContentType(.emailAddress)
                                     .keyboardType(.emailAddress)
+                                    .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()
                             }
                         )
+                        Text("Use a standard format: name@example.com, or your work or school address.")
+                            .font(BespokeFont.inter(12.8, weight: .regular))
+                            .foregroundStyle(BespokeColor.fieldLabel.opacity(0.65))
 
                         AuthPasswordInputRow(password: $password)
 
@@ -1534,15 +1538,20 @@ private struct AuthModalView: View {
     private var canSubmit: Bool {
         let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = password
+        guard EmailFormatValidator.isValid(e), !p.isEmpty else { return false }
         if mode == .register {
-            return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !e.isEmpty && !p.isEmpty
+            return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        return !e.isEmpty && !p.isEmpty
+        return true
     }
 
     private func submit() async {
         let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = password
+        guard EmailFormatValidator.isValid(e) else {
+            session.authError = EmailFormatValidator.invalidMessage
+            return
+        }
         switch mode {
         case .login:
             await session.login(email: e, password: p)
