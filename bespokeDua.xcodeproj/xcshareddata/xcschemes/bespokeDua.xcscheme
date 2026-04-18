@@ -59,7 +59,7 @@
          </EnvironmentVariable>
       </EnvironmentVariables>
       <StoreKitConfigurationFileReference
-         identifier = "../../bespokeDua/Configuration/BespokePlus.storekit">
+         identifier = "bespokeDua/Configuration/BespokePlus.storekit">
       </StoreKitConfigurationFileReference>
    </LaunchAction>
    <ProfileAction

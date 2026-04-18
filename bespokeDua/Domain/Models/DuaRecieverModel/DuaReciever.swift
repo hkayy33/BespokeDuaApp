@@ -7,7 +7,7 @@
 
 import Foundation
 
-struct DuaReceiver: Identifiable, Sendable {
+struct DuaReceiver: Identifiable, Sendable, Equatable {
     let id: UUID
     let duaText: String
     let explanations: [ExplanationModel]
@@ -19,7 +19,7 @@ struct DuaReceiver: Identifiable, Sendable {
     }
 }
 
-struct ExplanationModel: Identifiable, Sendable {
+struct ExplanationModel: Identifiable, Sendable, Equatable {
     let id: UUID
     let name: String
     let explanation: String

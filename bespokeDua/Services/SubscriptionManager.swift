@@ -40,7 +40,7 @@ final class SubscriptionManager {
                 await self.handle(transactionResult: result)
             }
         }
-        Task { await refreshEntitlements() }
+        // `refreshEntitlements()` runs from `ContentView` (.task / scene active) and upgrade modal — avoid duplicate work at launch.
     }
 
     func loadProduct() async {
@@ -93,7 +93,13 @@ final class SubscriptionManager {
             }
         }
         hasActiveAppleSubscription = active
-        appleOriginalTransactionID = linkedOriginalID
+        // Only set when StoreKit reports an ID — avoid clearing `appleOriginalTransactionID` when
+        // `currentEntitlements` is briefly empty (common right after a successful purchase).
+        if let linkedOriginalID {
+            appleOriginalTransactionID = linkedOriginalID
+        } else if !active {
+            appleOriginalTransactionID = nil
+        }
         recomputeEffectiveSubscription()
     }
 
@@ -121,8 +127,13 @@ final class SubscriptionManager {
             switch result {
             case .success(let verification):
                 let transaction = try Self.checkVerified(verification)
-                appleOriginalTransactionID = String(transaction.originalID)
                 await refreshEntitlements()
+                // `Transaction.currentEntitlements` can lag immediately after purchase; trust the
+                // verified transaction we just received so sync gets a stable originalTransactionId.
+                if transaction.revocationDate == nil {
+                    appleOriginalTransactionID = String(transaction.originalID)
+                    hasActiveAppleSubscription = true
+                }
                 await transaction.finish()
             case .userCancelled:
                 break
@@ -141,6 +152,10 @@ final class SubscriptionManager {
         do {
             try await AppStore.sync()
             await refreshEntitlements()
+            if !hasActiveAppleSubscription {
+                lastErrorMessage =
+                    "No active subscription for this Apple ID. Subscribe to get Bespoke Plus access."
+            }
         } catch {
             lastErrorMessage = error.localizedDescription
         }
@@ -162,6 +177,10 @@ final class SubscriptionManager {
             let transaction = try Self.checkVerified(transactionResult)
             if transaction.productID == Self.plusMonthlyProductID {
                 await refreshEntitlements()
+                if transaction.revocationDate == nil {
+                    appleOriginalTransactionID = String(transaction.originalID)
+                    hasActiveAppleSubscription = true
+                }
             }
             await transaction.finish()
         } catch {

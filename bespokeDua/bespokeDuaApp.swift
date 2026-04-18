@@ -33,7 +33,8 @@ struct bespokeDuaApp: App {
             }
             .animation(.easeInOut(duration: 0.4), value: showMainContent)
             .task {
-                try? await Task.sleep(for: .seconds(1.5))
+                // Short delay so the splash isn’t a flash; keep well under 1s for perceived startup speed.
+                try? await Task.sleep(for: .milliseconds(400))
                 showMainContent = true
             }
         }
