@@ -1388,9 +1388,6 @@ private struct AuthModalView: View {
                                     .autocorrectionDisabled()
                             }
                         )
-                        Text("Use a standard format: name@example.com, or your work or school address.")
-                            .font(BespokeFont.inter(12.8, weight: .regular))
-                            .foregroundStyle(BespokeColor.fieldLabel.opacity(0.65))
 
                         AuthPasswordInputRow(password: $password)
 
