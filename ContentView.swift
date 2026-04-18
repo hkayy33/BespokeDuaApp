@@ -794,7 +794,8 @@ struct ContentView: View {
 
 private struct BespokeLoaderDots: View {
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1 / 30, paused: false)) { context in
+        // ~8 updates/sec is enough for the pulse; 30/sec was unnecessary main-thread work during generation.
+        TimelineView(.animation(minimumInterval: 0.12, paused: false)) { context in
             let t = context.date.timeIntervalSinceReferenceDate
             HStack(spacing: 8) {
                 ForEach(0 ..< 3, id: \.self) { i in
@@ -1026,7 +1027,7 @@ private struct UpgradeInfoModalView: View {
     var emphasizeDailyLimit: Bool
 
     private static let privacyPolicyURL = URL(
-        string: "https://www.notion.so/bespoke-dua/Privacy-Policy-Bespoke-Dua-33a1b4628d358095817dcd58027872bd?source=copy_link"
+        string: "https://www.bespokedua.com/privacy-policy"
     )!
     /// Standard Apple Terms of Use (EULA) for auto-renewable subscriptions.
     private static let appleStandardEULAURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
@@ -1077,34 +1078,35 @@ private struct UpgradeInfoModalView: View {
                 }
 
                 VStack(spacing: 10) {
-                    if !subscriptionManager.hasActiveAppleSubscription {
-                        Button {
-                            Task {
-                                await subscriptionManager.purchase()
-                                guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
-                                do {
-                                    try await session.syncSubscribedPlan(
-                                        originalTransactionId: subscriptionManager.appleOriginalTransactionID
-                                    )
-                                } catch {
-                                    subscriptionManager.setSyncErrorMessage(
-                                        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                                    )
-                                }
+                    // Always offer Subscribe when this account is not Plus. Device-level Apple
+                    // entitlements can remain from sandbox or another App Store account; gating
+                    // Subscribe on `hasActiveAppleSubscription` hid the button in those cases.
+                    Button {
+                        Task {
+                            await subscriptionManager.purchase()
+                            guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
+                            do {
+                                try await session.syncSubscribedPlan(
+                                    originalTransactionId: subscriptionManager.appleOriginalTransactionID
+                                )
+                            } catch {
+                                subscriptionManager.setSyncErrorMessage(
+                                    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                                )
                             }
-                        } label: {
-                            Text("Subscribe")
-                                .font(BespokeFont.inter(17, weight: .semibold))
-                                .foregroundStyle(BespokeColor.cream)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 16)
-                                .background(BespokeColor.forest)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
-                        .buttonStyle(.plain)
-                        .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
-                        .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
+                    } label: {
+                        Text("Subscribe")
+                            .font(BespokeFont.inter(17, weight: .semibold))
+                            .foregroundStyle(BespokeColor.cream)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(BespokeColor.forest)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                     }
+                    .buttonStyle(.plain)
+                    .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
+                    .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
 
                     Button {
                         Task {
@@ -1382,9 +1384,13 @@ private struct AuthModalView: View {
                                 TextField("", text: $email, prompt: Text("Email").foregroundStyle(BespokeColor.subtle))
                                     .textContentType(.emailAddress)
                                     .keyboardType(.emailAddress)
+                                    .textInputAutocapitalization(.never)
                                     .autocorrectionDisabled()
                             }
                         )
+                        Text("Use a standard format: name@example.com, or your work or school address.")
+                            .font(BespokeFont.inter(12.8, weight: .regular))
+                            .foregroundStyle(BespokeColor.fieldLabel.opacity(0.65))
 
                         AuthPasswordInputRow(password: $password)
 
@@ -1532,15 +1538,20 @@ private struct AuthModalView: View {
     private var canSubmit: Bool {
         let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = password
+        guard EmailFormatValidator.isValid(e), !p.isEmpty else { return false }
         if mode == .register {
-            return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !e.isEmpty && !p.isEmpty
+            return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
-        return !e.isEmpty && !p.isEmpty
+        return true
     }
 
     private func submit() async {
         let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = password
+        guard EmailFormatValidator.isValid(e) else {
+            session.authError = EmailFormatValidator.invalidMessage
+            return
+        }
         switch mode {
         case .login:
             await session.login(email: e, password: p)
