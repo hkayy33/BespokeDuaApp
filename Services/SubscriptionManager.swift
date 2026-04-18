@@ -152,6 +152,10 @@ final class SubscriptionManager {
         do {
             try await AppStore.sync()
             await refreshEntitlements()
+            if !hasActiveAppleSubscription {
+                lastErrorMessage =
+                    "No active subscription for this Apple ID. Subscribe to get Bespoke Plus access."
+            }
         } catch {
             lastErrorMessage = error.localizedDescription
         }

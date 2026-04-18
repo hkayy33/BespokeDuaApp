@@ -1026,7 +1026,7 @@ private struct UpgradeInfoModalView: View {
     var emphasizeDailyLimit: Bool
 
     private static let privacyPolicyURL = URL(
-        string: "https://www.notion.so/bespoke-dua/Privacy-Policy-Bespoke-Dua-33a1b4628d358095817dcd58027872bd?source=copy_link"
+        string: "https://www.bespokedua.com/privacy-policy"
     )!
     /// Standard Apple Terms of Use (EULA) for auto-renewable subscriptions.
     private static let appleStandardEULAURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
