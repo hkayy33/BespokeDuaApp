@@ -342,7 +342,23 @@ struct ContentView: View {
                                 .multilineTextAlignment(.center)
                                 .fixedSize(horizontal: false, vertical: true)
 
-                            if !subscribed {
+                            if subscribed {
+                                Button {
+                                    upgradeModalBecauseQuota = false
+                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                        showAccountDrawer = false
+                                    }
+                                    showUpgradeInfoModal = true
+                                } label: {
+                                    Label("Manage subscription", systemImage: "creditcard")
+                                        .font(BespokeFont.inter(16, weight: .semibold))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                }
+                                .buttonStyle(.bordered)
+                                .tint(BespokeColor.forest)
+                                .padding(.top, 4)
+                            } else {
                                 Button {
                                     upgradeModalBecauseQuota = false
                                     withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
@@ -1022,15 +1038,23 @@ private struct DeleteAccountConfirmationView: View {
 private struct UpgradeInfoModalView: View {
     @Environment(AppSession.self) private var session
     @Environment(SubscriptionManager.self) private var subscriptionManager
+    @Environment(\.openURL) private var openURL
     @Binding var isPresented: Bool
     @State private var showTransferConfirmation = false
     var emphasizeDailyLimit: Bool
 
+    private static let manageSubscriptionsURL = URL(string: "https://apps.apple.com/account/subscriptions")!
     private static let privacyPolicyURL = URL(
         string: "https://www.bespokedua.com/privacy-policy"
     )!
     /// Standard Apple Terms of Use (EULA) for auto-renewable subscriptions.
     private static let appleStandardEULAURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
+    private static let renewalDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .long
+        formatter.timeStyle = .none
+        return formatter
+    }()
 
     var body: some View {
         BespokeCardModalView(isPresented: $isPresented, title: "Bespoke Plus") {
@@ -1039,6 +1063,46 @@ private struct UpgradeInfoModalView: View {
                     .font(BespokeFont.inter(16, weight: .regular))
                     .foregroundStyle(BespokeColor.bodyText)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if let renewalDate = subscriptionManager.appleSubscriptionRenewalDate {
+                    Text("Renews on \(Self.renewalDateFormatter.string(from: renewalDate)).")
+                        .font(BespokeFont.inter(15, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Renewal details are available in your Apple subscription settings.")
+                        .font(BespokeFont.inter(14, weight: .regular))
+                        .foregroundStyle(BespokeColor.muted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(spacing: 10) {
+                    Button {
+                        openURL(Self.manageSubscriptionsURL)
+                    } label: {
+                        Text("Manage in App Store")
+                            .font(BespokeFont.inter(16, weight: .semibold))
+                            .foregroundStyle(BespokeColor.forest)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(BespokeColor.forest)
+
+                    Button {
+                        openURL(Self.manageSubscriptionsURL)
+                    } label: {
+                        Text("Cancel subscription")
+                            .font(BespokeFont.inter(16, weight: .semibold))
+                            .foregroundStyle(BespokeColor.cream)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 12)
+                            .background(BespokeColor.error)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 4)
             } else {
                 if emphasizeDailyLimit {
                     Text("You’ve used all \(DailyGenerationQuota.freeDailyLimit) free bespoke duas for today. Subscribe to continue.")
@@ -1177,20 +1241,21 @@ private struct UpgradeInfoModalView: View {
                     .foregroundStyle(BespokeColor.muted)
                     .fixedSize(horizontal: false, vertical: true)
 
-                VStack {
-                    HStack(spacing: 18) {
-                        Link("Privacy Policy", destination: Self.privacyPolicyURL)
-                            .font(BespokeFont.inter(15, weight: .semibold))
-                            .foregroundStyle(BespokeColor.forest)
-
-                        Link("Terms of Use (EULA)", destination: Self.appleStandardEULAURL)
-                            .font(BespokeFont.inter(15, weight: .semibold))
-                            .foregroundStyle(BespokeColor.forest)
-                    }
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.top, 4)
             }
+
+            VStack {
+                HStack(spacing: 18) {
+                    Link("Privacy Policy", destination: Self.privacyPolicyURL)
+                        .font(BespokeFont.inter(15, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+
+                    Link("Terms of Use (EULA)", destination: Self.appleStandardEULAURL)
+                        .font(BespokeFont.inter(15, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 4)
         }
         .task {
             subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
