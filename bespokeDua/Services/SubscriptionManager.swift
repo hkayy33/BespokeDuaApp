@@ -27,6 +27,7 @@ final class SubscriptionManager {
     private(set) var hasActiveAppleSubscription = false
     private(set) var hasActiveDatabaseSubscription = false
     private(set) var appleOriginalTransactionID: String?
+    private(set) var appleSubscriptionRenewalDate: Date?
     private(set) var loadInFlight = false
     private(set) var purchaseInFlight = false
     private(set) var lastErrorMessage: String?
@@ -84,12 +85,14 @@ final class SubscriptionManager {
     func refreshEntitlements() async {
         var active = false
         var linkedOriginalID: String?
+        var renewalDate: Date?
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             guard transaction.productID == Self.plusMonthlyProductID else { continue }
             if transaction.revocationDate == nil {
                 active = true
                 linkedOriginalID = String(transaction.originalID)
+                renewalDate = transaction.expirationDate
             }
         }
         hasActiveAppleSubscription = active
@@ -100,6 +103,7 @@ final class SubscriptionManager {
         } else if !active {
             appleOriginalTransactionID = nil
         }
+        appleSubscriptionRenewalDate = renewalDate
         recomputeEffectiveSubscription()
     }
 
