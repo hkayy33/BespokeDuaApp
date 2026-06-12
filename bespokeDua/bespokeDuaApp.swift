@@ -37,6 +37,9 @@ struct bespokeDuaApp: App {
                 try? await Task.sleep(for: .milliseconds(400))
                 showMainContent = true
             }
+            .onOpenURL { url in
+                Task { await session.handleAuthURL(url) }
+            }
         }
     }
 }

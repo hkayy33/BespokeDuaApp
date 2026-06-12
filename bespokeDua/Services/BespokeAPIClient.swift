@@ -84,6 +84,21 @@ struct BespokeAPIClient: Sendable {
         }
     }
 
+    func syncProfile(username: String?, bearerToken: String?) async throws -> AuthUser {
+        let body = SyncProfileRequest(username: username)
+        var req = try request(path: "Auth/sync", method: "POST", body: body)
+        if let bearerToken, !bearerToken.isEmpty {
+            req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, resp) = try await data(for: req)
+        try throwIfNeeded(data: data, response: resp)
+        do {
+            return try Self.makeDecoder().decode(AuthUser.self, from: data)
+        } catch {
+            throw BespokeAPIError.decoding(error)
+        }
+    }
+
     func generateDuas(text: String, userId: Int?) async throws -> [DuaReceiver] {
         let body = GenerateDuaRequestBody(text: text, userId: userId)
         let req = try request(path: "Dua/generate", method: "POST", body: body)
@@ -132,10 +147,12 @@ struct BespokeAPIClient: Sendable {
         try throwIfNeeded(data: data, response: resp)
     }
 
-    /// `DELETE api/Auth/account`. Backend expects `Authorization: Bearer <userId>` (numeric id as string), not a JWT.
-    func deleteAccount(authorizedUserId userId: Int) async throws {
+    /// `DELETE api/Auth/account`. Bearer is Supabase JWT or legacy numeric user id.
+    func deleteAccount(bearerToken: String?) async throws {
         var req = try request(path: "Auth/account", method: "DELETE")
-        req.setValue("Bearer \(userId)", forHTTPHeaderField: "Authorization")
+        if let bearerToken, !bearerToken.isEmpty {
+            req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization")
+        }
         let (data, resp) = try await data(for: req)
         try throwIfNeeded(data: data, response: resp)
     }
@@ -143,6 +160,7 @@ struct BespokeAPIClient: Sendable {
     /// `PATCH api/Plan/subscribe`. Sends Apple linkage metadata for strict account ownership checks.
     func subscribePlan(
         authorizedUserId userId: Int,
+        bearerToken: String?,
         originalTransactionId: String?,
         productId: String = SubscriptionManager.plusMonthlyProductID,
         confirmTransfer: Bool = false
@@ -153,7 +171,8 @@ struct BespokeAPIClient: Sendable {
             confirmTransfer: confirmTransfer
         )
         var req = try request(path: "Plan/subscribe", method: "PATCH", body: body)
-        req.setValue("Bearer \(userId)", forHTTPHeaderField: "Authorization")
+        let token = bearerToken ?? String(userId)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let (data, resp) = try await data(for: req)
         try throwIfNeeded(data: data, response: resp)
         do {

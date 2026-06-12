@@ -741,7 +741,6 @@ struct ContentView: View {
             generated = duas
             savedDuaIDs = []
             savedDuaServerIdByLocalId = [:]
-            requestText = ""
             if !subscriptionManager.isSubscribed, let id = session.currentUser?.userId {
                 DailyGenerationQuota.recordGeneration(userId: id)
                 dailyQuotaRefresh += 1
@@ -1270,6 +1269,7 @@ private struct UpgradeInfoModalView: View {
 #if canImport(UIKit)
 private struct AuthSecureUITextField: UIViewRepresentable {
     @Binding var text: String
+    var placeholder: String = "Password"
 
     func makeUIView(context: Context) -> UITextField {
         let tf = UITextField()
@@ -1288,7 +1288,7 @@ private struct AuthSecureUITextField: UIViewRepresentable {
         tf.textColor = Self.bodyText
         tf.tintColor = Self.forest
         tf.attributedPlaceholder = NSAttributedString(
-            string: "Password",
+            string: placeholder,
             attributes: [
                 .foregroundColor: Self.subtle,
                 .font: font,
@@ -1346,18 +1346,19 @@ private struct AuthSecureUITextField: UIViewRepresentable {
 /// Isolated from `AppSession` so `@Observable` invalidation does not recreate the UIKit password field every render.
 private struct AuthPasswordInputRow: View {
     @Binding var password: String
+    var label: String = "Password"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Password")
+            Text(label)
                 .font(BespokeFont.inter(15.2, weight: .bold))
                 .foregroundStyle(BespokeColor.fieldLabel)
             Group {
                 #if canImport(UIKit)
-                AuthSecureUITextField(text: $password)
-                    .id("authSecurePassword")
+                AuthSecureUITextField(text: $password, placeholder: label)
+                    .id("authSecurePassword-\(label)")
                 #else
-                SecureField("Password", text: $password)
+                SecureField(label, text: $password)
                     .font(BespokeFont.inter(16, weight: .regular))
                     .foregroundStyle(BespokeColor.bodyText)
                     .textInputAutocapitalization(.never)
@@ -1387,12 +1388,40 @@ private func dismissAuthKeyboard() {
 private struct AuthModalView: View {
     @Environment(AppSession.self) private var session
     @State private var mode: AuthTab = .login
+    @State private var loginView: LoginView = .login
+    @State private var registerStep: RegisterStep = .form
     @State private var username = ""
     @State private var email = ""
     @State private var password = ""
+    @State private var newPassword = ""
+    @State private var confirmPassword = ""
+    @State private var hasAcceptedLegalTerms = false
+    @State private var resendMessage: String?
+    @State private var successMessage: String?
+    @State private var forgotEmailTouched = false
+    @State private var resetPasswordTouched = false
+
+    private static let privacyPolicyURL = URL(string: "https://www.bespokedua.com/privacy-policy")!
+    private static let termsOfUseURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
 
     private enum AuthTab {
         case login, register
+    }
+
+    private enum LoginView {
+        case login, forgot, resetSent, setPassword
+    }
+
+    private enum RegisterStep {
+        case form, verify
+    }
+
+    private var showingPasswordRecovery: Bool {
+        session.passwordRecoveryPending || loginView == .setPassword
+    }
+
+    private var supabaseAuth: Bool {
+        SupabaseConfig.isConfigured
     }
 
     var body: some View {
@@ -1407,104 +1436,142 @@ private struct AuthModalView: View {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 VStack(spacing: 0) {
-                HStack(spacing: 6) {
-                    authToggleButton(title: "Login", tab: .login)
-                    authToggleButton(title: "Register", tab: .register)
+                if mode == .register, registerStep == .verify {
+                    HStack {
+                        Button {
+                            editRegistration()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text("Edit registration")
+                                    .font(BespokeFont.inter(15, weight: .semibold))
+                            }
+                            .foregroundStyle(BespokeColor.forest)
+                        }
+                        .buttonStyle(.plain)
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 14)
+                    .padding(.bottom, 4)
+                } else if !showingPasswordRecovery, loginView != .forgot, loginView != .resetSent {
+                    HStack(spacing: 6) {
+                        authToggleButton(title: "Login", tab: .login)
+                        authToggleButton(title: "Register", tab: .register)
+                    }
+                    .padding(6)
+                    .background(BespokeColor.authToggleBg)
+                    .clipShape(RoundedRectangle(cornerRadius: 999, style: .continuous))
+                    .padding(.horizontal, 6)
+                    .padding(.top, 6)
                 }
-                .padding(6)
-                .background(BespokeColor.authToggleBg)
-                .clipShape(RoundedRectangle(cornerRadius: 999, style: .continuous))
-                .padding(.horizontal, 6)
-                .padding(.top, 6)
 
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        if mode == .login {
-                            Text("Login")
-                                .font(BespokeFont.inter(29.6, weight: .semibold))
-                                .foregroundStyle(BespokeColor.forest)
+                        if mode == .register, registerStep == .verify {
+                            emailVerificationStepContent
+                        } else if mode == .login, showingPasswordRecovery {
+                            setPasswordContent
+                        } else if mode == .login, loginView == .forgot {
+                            forgotPasswordContent
+                        } else if mode == .login, loginView == .resetSent {
+                            resetSentContent
                         } else {
-                            Text("Create an Account")
-                                .font(BespokeFont.inter(29.6, weight: .semibold))
-                                .foregroundStyle(BespokeColor.forest)
-                        }
+                            if mode == .login {
+                                Text("Login")
+                                    .font(BespokeFont.inter(29.6, weight: .semibold))
+                                    .foregroundStyle(BespokeColor.forest)
+                            } else {
+                                Text("Create an Account")
+                                    .font(BespokeFont.inter(29.6, weight: .semibold))
+                                    .foregroundStyle(BespokeColor.forest)
+                            }
 
-                        if mode == .register {
+                            if mode == .register {
+                                authField(
+                                    label: "Username",
+                                    content: {
+                                        TextField("", text: $username, prompt: Text("Username").foregroundStyle(BespokeColor.subtle))
+                                            .textContentType(.username)
+                                            .autocorrectionDisabled()
+                                    }
+                                )
+                                Text("2–100 characters. Letters, numbers, underscores, or hyphens.")
+                                    .font(BespokeFont.inter(12.8, weight: .regular))
+                                    .foregroundStyle(BespokeColor.fieldLabel.opacity(0.65))
+                            }
+
                             authField(
-                                label: "Username",
+                                label: "Email",
                                 content: {
-                                    TextField("", text: $username, prompt: Text("Username").foregroundStyle(BespokeColor.subtle))
-                                        .textContentType(.username)
+                                    TextField("", text: $email, prompt: Text("Email").foregroundStyle(BespokeColor.subtle))
+                                        .textContentType(.emailAddress)
+                                        .keyboardType(.emailAddress)
+                                        .textInputAutocapitalization(.never)
                                         .autocorrectionDisabled()
                                 }
                             )
-                            Text("2–100 characters. Letters, numbers, underscores, or hyphens.")
-                                .font(BespokeFont.inter(12.8, weight: .regular))
-                                .foregroundStyle(BespokeColor.fieldLabel.opacity(0.65))
+
+                            AuthPasswordInputRow(password: $password)
+
+                            VStack(alignment: .leading, spacing: 10) {
+                                Button {
+                                    hasAcceptedLegalTerms.toggle()
+                                } label: {
+                                    HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                        Image(systemName: hasAcceptedLegalTerms ? "checkmark.square.fill" : "square")
+                                            .font(.system(size: 18, weight: .semibold))
+                                            .foregroundStyle(hasAcceptedLegalTerms ? BespokeColor.forest : BespokeColor.fieldLabel.opacity(0.8))
+                                        Text("I agree to the")
+                                            .font(BespokeFont.inter(14, weight: .regular))
+                                            .foregroundStyle(BespokeColor.bodyText)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                HStack(spacing: 4) {
+                                    Link("Terms and Conditions", destination: Self.termsOfUseURL)
+                                    Text("and")
+                                        .foregroundStyle(BespokeColor.bodyText)
+                                    Link("Privacy Policy", destination: Self.privacyPolicyURL)
+                                }
+                                .font(BespokeFont.inter(13.5, weight: .semibold))
+                                .foregroundStyle(BespokeColor.forest)
+                            }
                         }
 
-                        authField(
-                            label: "Email",
-                            content: {
-                                TextField("", text: $email, prompt: Text("Email").foregroundStyle(BespokeColor.subtle))
-                                    .textContentType(.emailAddress)
-                                    .keyboardType(.emailAddress)
-                                    .textInputAutocapitalization(.never)
-                                    .autocorrectionDisabled()
-                            }
-                        )
-
-                        AuthPasswordInputRow(password: $password)
+                        if let successMessage {
+                            authSuccessAlert(successMessage)
+                        }
 
                         if let err = session.authError {
-                            HStack(alignment: .top, spacing: 10) {
-                                Text("!")
-                                    .font(.system(size: 12, weight: .heavy))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 24, height: 24)
-                                    .background(Color(red: 181 / 255, green: 47 / 255, blue: 49 / 255))
-                                    .clipShape(Circle())
-                                Text(err)
-                                    .font(BespokeFont.inter(14.7, weight: .semibold))
-                                    .foregroundStyle(Color(red: 107 / 255, green: 29 / 255, blue: 31 / 255))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .padding(14)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                LinearGradient(
-                                    colors: [
-                                        Color(red: 181 / 255, green: 47 / 255, blue: 49 / 255).opacity(0.1),
-                                        Color(red: 181 / 255, green: 47 / 255, blue: 49 / 255).opacity(0.04),
-                                    ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
-                                )
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                    .stroke(Color(red: 181 / 255, green: 47 / 255, blue: 49 / 255).opacity(0.28), lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            authErrorAlert(err)
                         }
 
-                        Button {
-                            #if canImport(UIKit)
-                            dismissAuthKeyboard()
-                            #endif
-                            Task { await submit() }
-                        } label: {
-                            Text(mode == .login ? "Login" : "Register")
-                                .font(BespokeFont.inter(17, weight: .bold))
-                                .foregroundStyle(BespokeColor.cream)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 17)
-                                .background(BespokeColor.forest)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        if mode == .login, loginView == .login, !(mode == .register && registerStep == .verify) {
+                            authPrimaryButton(title: "Login", disabled: session.authInFlight || !canSubmitLogin) {
+                                Task { await submit() }
+                            }
+
+                            if supabaseAuth {
+                                Button {
+                                    showForgotPassword()
+                                } label: {
+                                    Text("Forgot password?")
+                                        .font(BespokeFont.inter(14.4, weight: .semibold))
+                                        .foregroundStyle(Color(red: 29 / 255, green: 100 / 255, blue: 58 / 255))
+                                        .underline(true, color: Color(red: 29 / 255, green: 100 / 255, blue: 58 / 255))
+                                        .frame(maxWidth: .infinity)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.top, 4)
+                            }
+                        } else if mode == .register, registerStep == .form {
+                            authPrimaryButton(title: "Register", disabled: session.authInFlight || !canSubmitRegister) {
+                                Task { await submit() }
+                            }
                         }
-                        .buttonStyle(.plain)
-                        .disabled(session.authInFlight || !canSubmit)
-                        .opacity(session.authInFlight || !canSubmit ? 0.65 : 1)
                     }
                     .padding(24)
                 }
@@ -1543,7 +1610,7 @@ private struct AuthModalView: View {
                     }
                 }
                 }
-                .frame(maxWidth: 540, maxHeight: mode == .login ? 500 : 650)
+                .frame(maxWidth: 540, maxHeight: authCardMaxHeight)
                 .background(BespokeColor.authCard)
                 .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .overlay(
@@ -1557,6 +1624,530 @@ private struct AuthModalView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            syncRegisterStepFromSession()
+            syncLoginViewFromSession()
+        }
+        .onChange(of: session.pendingVerificationEmail) { _, _ in
+            syncRegisterStepFromSession()
+        }
+        .onChange(of: session.passwordRecoveryPending) { _, _ in
+            syncLoginViewFromSession()
+        }
+    }
+
+    private var authCardMaxHeight: CGFloat {
+        if showingPasswordRecovery { return 560 }
+        if mode == .login, loginView == .resetSent { return 420 }
+        if mode == .login, loginView == .forgot { return 480 }
+        if mode == .login, loginView == .login { return 540 }
+        if registerStep == .verify { return 560 }
+        return 650
+    }
+
+    private var pendingVerificationAddress: String {
+        session.pendingVerificationEmail ?? email.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    @ViewBuilder
+    private var emailVerificationStepContent: some View {
+        VStack(spacing: 22) {
+            ZStack {
+                Circle()
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                BespokeColor.forest.opacity(0.14),
+                                BespokeColor.gold.opacity(0.22),
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: 72, height: 72)
+                Image(systemName: "envelope.badge.fill")
+                    .font(.system(size: 32, weight: .medium))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(BespokeColor.forest, BespokeColor.gold)
+            }
+            .frame(maxWidth: .infinity)
+
+            VStack(spacing: 8) {
+                Text("Check your email")
+                    .font(BespokeFont.display(26))
+                    .foregroundStyle(BespokeColor.forest)
+                    .multilineTextAlignment(.center)
+                Text("We sent a confirmation link to finish creating your account.")
+                    .font(BespokeFont.inter(15, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Sent to")
+                    .font(BespokeFont.inter(12, weight: .semibold))
+                    .foregroundStyle(BespokeColor.fieldLabel.opacity(0.85))
+                    .textCase(.uppercase)
+                    .tracking(0.6)
+                Text(pendingVerificationAddress)
+                    .font(BespokeFont.inter(16, weight: .semibold))
+                    .foregroundStyle(BespokeColor.forest)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
+            .background(BespokeColor.inputSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(BespokeColor.forest.opacity(0.2), lineWidth: 1)
+            )
+
+            VStack(alignment: .leading, spacing: 14) {
+                verificationInstructionRow(
+                    number: 1,
+                    title: "Open your inbox",
+                    detail: "Check spam or promotions if you don’t see it within a few minutes."
+                )
+                verificationInstructionRow(
+                    number: 2,
+                    title: "Tap the confirmation link",
+                    detail: "The email is from Bespoke Dua — one tap verifies your address."
+                )
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(BespokeColor.forest.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(BespokeColor.forest.opacity(0.1), lineWidth: 1)
+            )
+
+            if let resendMessage {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundStyle(BespokeColor.forest)
+                    Text(resendMessage)
+                        .font(BespokeFont.inter(14, weight: .semibold))
+                        .foregroundStyle(BespokeColor.fieldLabel)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(BespokeColor.forest.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+
+            VStack(spacing: 10) {
+                Button {
+                    Task { await resendVerification() }
+                } label: {
+                    Group {
+                        if session.authInFlight {
+                            HStack(spacing: 10) {
+                                ProgressView()
+                                    .tint(BespokeColor.cream)
+                                Text("Sending…")
+                            }
+                        } else {
+                            Text("Resend confirmation email")
+                        }
+                    }
+                    .font(BespokeFont.inter(16, weight: .semibold))
+                    .foregroundStyle(BespokeColor.cream)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 15)
+                    .background(BespokeColor.forest)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(session.authInFlight)
+
+                Button {
+                    editRegistration()
+                } label: {
+                    Text("Use a different email")
+                        .font(BespokeFont.inter(15, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .tint(BespokeColor.forest)
+                .disabled(session.authInFlight)
+            }
+        }
+    }
+
+    private func verificationInstructionRow(number: Int, title: String, detail: String) -> some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text("\(number)")
+                .font(BespokeFont.inter(14, weight: .bold))
+                .foregroundStyle(BespokeColor.cream)
+                .frame(width: 28, height: 28)
+                .background(BespokeColor.forest)
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(BespokeFont.inter(15, weight: .semibold))
+                    .foregroundStyle(BespokeColor.forest)
+                Text(detail)
+                    .font(BespokeFont.inter(13.5, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var forgotPasswordContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Reset password")
+                .font(BespokeFont.inter(29.6, weight: .semibold))
+                .foregroundStyle(BespokeColor.forest)
+
+            Text("Enter your email and we’ll send you a link to reset your password.")
+                .font(BespokeFont.inter(15.2, weight: .regular))
+                .foregroundStyle(Color(red: 38 / 255, green: 74 / 255, blue: 56 / 255).opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+
+            authField(
+                label: "Email",
+                content: {
+                    TextField("", text: $email, prompt: Text("Email").foregroundStyle(BespokeColor.subtle))
+                        .textContentType(.emailAddress)
+                        .keyboardType(.emailAddress)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .onChange(of: email) { _, _ in
+                            session.authError = nil
+                            successMessage = nil
+                        }
+                }
+            )
+
+            if let msg = forgotEmailErrorMessage {
+                authFieldError(msg)
+            }
+
+            authPrimaryButton(title: "Send reset link", disabled: session.authInFlight || !canSendResetEmail) {
+                Task { await sendResetEmail() }
+            }
+
+            authSecondaryButton(title: "Back to login", disabled: session.authInFlight) {
+                backToLogin()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var resetSentContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Check your email")
+                .font(BespokeFont.inter(29.6, weight: .semibold))
+                .foregroundStyle(BespokeColor.forest)
+
+            (
+                Text("If an account exists for ")
+                + Text(email.trimmingCharacters(in: .whitespacesAndNewlines)).bold()
+                + Text(", you’ll receive a password reset link shortly. Check spam or promotions if you don’t see it.")
+            )
+            .font(BespokeFont.inter(15.2, weight: .regular))
+            .foregroundStyle(Color(red: 38 / 255, green: 74 / 255, blue: 56 / 255).opacity(0.85))
+            .fixedSize(horizontal: false, vertical: true)
+
+            authSecondaryButton(title: "Back to login", disabled: false) {
+                backToLogin()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var setPasswordContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Set a new password")
+                .font(BespokeFont.inter(29.6, weight: .semibold))
+                .foregroundStyle(BespokeColor.forest)
+
+            Text("Choose a new password for your account. You’ll be signed in once it’s saved.")
+                .font(BespokeFont.inter(15.2, weight: .regular))
+                .foregroundStyle(Color(red: 38 / 255, green: 74 / 255, blue: 56 / 255).opacity(0.85))
+                .fixedSize(horizontal: false, vertical: true)
+
+            AuthPasswordInputRow(password: $newPassword, label: "New password")
+                .onChange(of: newPassword) { _, _ in
+                    session.authError = nil
+                    successMessage = nil
+                }
+
+            if let msg = newPasswordErrorMessage {
+                authFieldError(msg)
+            }
+
+            AuthPasswordInputRow(password: $confirmPassword, label: "Confirm password")
+                .onChange(of: confirmPassword) { _, _ in
+                    session.authError = nil
+                    successMessage = nil
+                }
+
+            if let msg = confirmPasswordErrorMessage {
+                authFieldError(msg)
+            }
+
+            authPrimaryButton(title: "Save password", disabled: session.authInFlight || !canSaveNewPassword) {
+                Task { await saveNewPassword() }
+            }
+
+            authSecondaryButton(title: "Cancel", disabled: session.authInFlight) {
+                cancelPasswordReset()
+            }
+        }
+    }
+
+    private func syncRegisterStepFromSession() {
+        if session.awaitingEmailVerification {
+            mode = .register
+            registerStep = .verify
+        }
+    }
+
+    private func syncLoginViewFromSession() {
+        if session.passwordRecoveryPending {
+            mode = .login
+            loginView = .setPassword
+        }
+    }
+
+    private func showForgotPassword() {
+        successMessage = nil
+        session.authError = nil
+        loginView = .forgot
+    }
+
+    private func backToLogin() {
+        successMessage = nil
+        session.authError = nil
+        loginView = .login
+    }
+
+    private func cancelPasswordReset() {
+        session.clearPasswordRecovery()
+        newPassword = ""
+        confirmPassword = ""
+        resetPasswordTouched = false
+        backToLogin()
+    }
+
+    private func sendResetEmail() async {
+        forgotEmailTouched = true
+        successMessage = nil
+        session.authError = nil
+
+        let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !e.isEmpty, EmailFormatValidator.isValid(e) else { return }
+
+        #if canImport(UIKit)
+        dismissAuthKeyboard()
+        #endif
+
+        if await session.requestPasswordReset(email: e) {
+            loginView = .resetSent
+        }
+    }
+
+    private func saveNewPassword() async {
+        resetPasswordTouched = true
+        successMessage = nil
+        session.authError = nil
+
+        guard canSaveNewPassword else { return }
+
+        #if canImport(UIKit)
+        dismissAuthKeyboard()
+        #endif
+
+        if await session.completePasswordReset(password: newPassword) {
+            if let username = session.currentUser?.username {
+                successMessage = "Password updated. Welcome back, \(username)!"
+            } else {
+                successMessage = "Password updated."
+            }
+            newPassword = ""
+            confirmPassword = ""
+            resetPasswordTouched = false
+            loginView = .login
+        }
+    }
+
+    private var canSendResetEmail: Bool {
+        EmailFormatValidator.isValid(email.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private var canSaveNewPassword: Bool {
+        newPasswordErrorMessage == nil && confirmPasswordErrorMessage == nil &&
+            newPassword.count >= 6 && !newPassword.isEmpty && !confirmPassword.isEmpty
+    }
+
+    private var forgotEmailErrorMessage: String? {
+        guard forgotEmailTouched else { return nil }
+        let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        if e.isEmpty { return "Email is required." }
+        if !EmailFormatValidator.isValid(e) { return "Enter a valid email address." }
+        return nil
+    }
+
+    private var newPasswordErrorMessage: String? {
+        guard resetPasswordTouched else { return nil }
+        if newPassword.isEmpty { return "Password is required." }
+        if newPassword.count < 6 { return "Password must be at least 6 characters." }
+        return nil
+    }
+
+    private var confirmPasswordErrorMessage: String? {
+        guard resetPasswordTouched else { return nil }
+        if confirmPassword.isEmpty { return "Please confirm your password." }
+        if newPassword != confirmPassword { return "Passwords do not match." }
+        return nil
+    }
+
+    private var canSubmitLogin: Bool {
+        let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard EmailFormatValidator.isValid(e), !password.isEmpty, hasAcceptedLegalTerms else { return false }
+        return true
+    }
+
+    private var canSubmitRegister: Bool {
+        let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard EmailFormatValidator.isValid(e), !password.isEmpty, hasAcceptedLegalTerms else { return false }
+        return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func authPrimaryButton(title: String, disabled: Bool, action: @escaping () -> Void) -> some View {
+        Button {
+            #if canImport(UIKit)
+            dismissAuthKeyboard()
+            #endif
+            action()
+        } label: {
+            Text(title)
+                .font(BespokeFont.inter(17, weight: .bold))
+                .foregroundStyle(BespokeColor.cream)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 17)
+                .background(BespokeColor.forest)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.65 : 1)
+    }
+
+    private func authSecondaryButton(title: String, disabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(BespokeFont.inter(16, weight: .semibold))
+                .foregroundStyle(BespokeColor.forest)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(BespokeColor.forest.opacity(0.22), lineWidth: 1)
+                )
+        }
+        .buttonStyle(.plain)
+        .disabled(disabled)
+        .opacity(disabled ? 0.65 : 1)
+        .padding(.top, 4)
+    }
+
+    private func authFieldError(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Text("!")
+                .font(.system(size: 11, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(width: 20, height: 20)
+                .background(Color(red: 181 / 255, green: 47 / 255, blue: 49 / 255))
+                .clipShape(Circle())
+            Text(message)
+                .font(BespokeFont.inter(13.5, weight: .semibold))
+                .foregroundStyle(Color(red: 107 / 255, green: 29 / 255, blue: 31 / 255))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func authErrorAlert(_ err: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("!")
+                .font(.system(size: 12, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(Color(red: 181 / 255, green: 47 / 255, blue: 49 / 255))
+                .clipShape(Circle())
+            Text(err)
+                .font(BespokeFont.inter(14.7, weight: .semibold))
+                .foregroundStyle(Color(red: 107 / 255, green: 29 / 255, blue: 31 / 255))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 181 / 255, green: 47 / 255, blue: 49 / 255).opacity(0.1),
+                    Color(red: 181 / 255, green: 47 / 255, blue: 49 / 255).opacity(0.04),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color(red: 181 / 255, green: 47 / 255, blue: 49 / 255).opacity(0.28), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func authSuccessAlert(_ message: String) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Text("✓")
+                .font(.system(size: 12, weight: .heavy))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(BespokeColor.forest)
+                .clipShape(Circle())
+            Text(message)
+                .font(BespokeFont.inter(14.7, weight: .semibold))
+                .foregroundStyle(BespokeColor.forest)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(BespokeColor.forest.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(BespokeColor.forest.opacity(0.22), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func editRegistration() {
+        session.clearEmailVerificationStage()
+        registerStep = .form
+        resendMessage = nil
+        session.authError = nil
+    }
+
+    private func resendVerification() async {
+        resendMessage = nil
+        session.authError = nil
+        if await session.resendVerificationEmail() {
+            resendMessage = "Email sent."
+        }
     }
 
     private func authToggleButton(title: String, tab: AuthTab) -> some View {
@@ -1565,6 +2156,16 @@ private struct AuthModalView: View {
             dismissAuthKeyboard()
             #endif
             mode = tab
+            if tab == .login {
+                registerStep = .form
+                if !session.passwordRecoveryPending {
+                    loginView = .login
+                }
+            } else {
+                syncRegisterStepFromSession()
+                loginView = .login
+            }
+            successMessage = nil
             session.authError = nil
         } label: {
             Text(title)
@@ -1597,28 +2198,37 @@ private struct AuthModalView: View {
         }
     }
 
-    private var canSubmit: Bool {
-        let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        let p = password
-        guard EmailFormatValidator.isValid(e), !p.isEmpty else { return false }
-        if mode == .register {
-            return !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        }
-        return true
-    }
-
     private func submit() async {
         let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
         let p = password
+        guard hasAcceptedLegalTerms else {
+            session.authError = "Please agree to the Terms and Conditions and Privacy Policy."
+            return
+        }
         guard EmailFormatValidator.isValid(e) else {
             session.authError = EmailFormatValidator.invalidMessage
             return
         }
+        successMessage = nil
         switch mode {
         case .login:
             await session.login(email: e, password: p)
         case .register:
-            await session.register(username: username.trimmingCharacters(in: .whitespacesAndNewlines), email: e, password: p)
+            let result = await session.register(
+                username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+                email: e,
+                password: p
+            )
+            switch result {
+            case .signedIn:
+                registerStep = .form
+                resendMessage = nil
+            case .awaitingVerification:
+                registerStep = .verify
+                resendMessage = nil
+            case .failed:
+                break
+            }
         }
     }
 }

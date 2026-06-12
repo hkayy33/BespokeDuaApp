@@ -4,6 +4,8 @@ import SwiftUI
 enum BespokeColor {
     /// Launch / splash screen — matches branded artwork background (~`#1b3d2f`).
     static let splashBackground = Color(red: 27 / 255, green: 61 / 255, blue: 47 / 255)
+    /// Prayer-hand stroke on the app icon (~`#efc978`).
+    static let iconHandGold = Color(red: 239 / 255, green: 201 / 255, blue: 120 / 255)
     /// Wordmark on splash (~warm tan from brand artwork).
     static let splashTitle = Color(red: 216 / 255, green: 176 / 255, blue: 140 / 255)
 

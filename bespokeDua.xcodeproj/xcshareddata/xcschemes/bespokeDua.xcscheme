@@ -57,9 +57,14 @@
             value = "YES"
             isEnabled = "YES">
          </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "BESPOKE_API_BASE_URL"
+            value = "http://127.0.0.1:8080/api"
+            isEnabled = "YES">
+         </EnvironmentVariable>
       </EnvironmentVariables>
       <StoreKitConfigurationFileReference
-         identifier = "bespokeDua/Configuration/BespokePlus.storekit">
+         identifier = "../../bespokeDua/Configuration/BespokePlus.storekit">
       </StoreKitConfigurationFileReference>
    </LaunchAction>
    <ProfileAction

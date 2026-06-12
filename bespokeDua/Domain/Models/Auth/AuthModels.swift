@@ -19,6 +19,16 @@ struct RegisterRequest: Encodable, Sendable {
     let password: String
 }
 
+struct SyncProfileRequest: Encodable, Sendable {
+    let username: String?
+}
+
+enum RegisterResult: Sendable {
+    case signedIn(AuthUser)
+    case awaitingVerification(email: String)
+    case failed
+}
+
 /// Matches `LoginResponseDto`: `{ "message", "user": GetUserDto }`.
 struct LoginResponse: Decodable, Sendable {
     let message: String?
