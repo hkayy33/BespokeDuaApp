@@ -30,6 +30,7 @@ struct ContentView: View {
     @Environment(AppSession.self) private var session
     @Environment(SubscriptionManager.self) private var subscriptionManager
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.openURL) private var openURL
     @State private var requestText = ""
     @State private var generated: [DuaReceiver] = []
     @State private var generateInFlight = false
@@ -42,9 +43,11 @@ struct ContentView: View {
     @State private var savedDuaServerIdByLocalId: [UUID: String] = [:]
     @FocusState private var duaFieldFocused: Bool
     @State private var showAccountDrawer = false
+    @State private var accountDrawerDragOffset: CGFloat = 0
     @State private var showDeleteAccountConfirmation = false
     @State private var deleteAccountInFlight = false
     @State private var deleteAccountError: String?
+    @State private var accountContactEmailCopied = false
     @State private var showUpgradeInfoModal = false
     @State private var upgradeModalBecauseQuota = false
     /// Bumps when quota should be re-read from `UserDefaults` (after a generation or app resume).
@@ -111,6 +114,9 @@ struct ContentView: View {
         }
         .overlay {
             accountDrawerOverlay
+        }
+        .overlay(alignment: .leading) {
+            accountDrawerEdgeSwipeCapture
         }
         .overlay {
             if showUpgradeInfoModal {
@@ -242,11 +248,88 @@ struct ContentView: View {
 
     // MARK: - Account drawer
 
+    private static let accountContactEmail = "bespokedua@gmail.com"
+    private static let accountContactGreen = Color(red: 29 / 255, green: 100 / 255, blue: 58 / 255)
+    private static var accountContactMailURL: URL {
+        URL(string: "mailto:\(accountContactEmail)")!
+    }
+
+    private func openAccountContactEmail() {
+        let mailURL = Self.accountContactMailURL
+        #if canImport(UIKit)
+        guard UIApplication.shared.canOpenURL(mailURL) else {
+            copyAccountContactEmailToClipboard()
+            return
+        }
+        UIApplication.shared.open(mailURL) { success in
+            Task { @MainActor in
+                if !success {
+                    copyAccountContactEmailToClipboard()
+                }
+            }
+        }
+        #else
+        openURL(mailURL)
+        #endif
+    }
+
+    private func copyAccountContactEmailToClipboard() {
+        #if canImport(UIKit)
+        UIPasteboard.general.string = Self.accountContactEmail
+        #elseif canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(Self.accountContactEmail, forType: .string)
+        #endif
+        accountContactEmailCopied = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            await MainActor.run {
+                accountContactEmailCopied = false
+            }
+        }
+    }
+
+    private static let accountDrawerEdgeActivationWidth: CGFloat = 28
+    private static let accountDrawerSpring = Animation.spring(response: 0.35, dampingFraction: 0.86)
+
+    private func accountDrawerPanelWidth(for width: CGFloat) -> CGFloat {
+        min(296, width * 0.88)
+    }
+
+    private func accountDrawerPanelOffset(panelWidth: CGFloat) -> CGFloat {
+        if showAccountDrawer {
+            return min(0, accountDrawerDragOffset)
+        }
+        return -panelWidth + min(accountDrawerDragOffset, panelWidth)
+    }
+
+    private func accountDrawerBackdropOpacity(panelWidth: CGFloat) -> Double {
+        let progress: CGFloat
+        if showAccountDrawer {
+            progress = 1 + accountDrawerDragOffset / panelWidth
+        } else {
+            progress = accountDrawerDragOffset / panelWidth
+        }
+        return Double(min(1, max(0, progress))) * 0.38
+    }
+
+    private func openAccountDrawer() {
+        withAnimation(Self.accountDrawerSpring) {
+            showAccountDrawer = true
+            accountDrawerDragOffset = 0
+        }
+    }
+
+    private func closeAccountDrawer() {
+        withAnimation(Self.accountDrawerSpring) {
+            showAccountDrawer = false
+            accountDrawerDragOffset = 0
+        }
+    }
+
     private func accountDrawerToolbarButton() -> some View {
         Button {
-            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                showAccountDrawer = true
-            }
+            openAccountDrawer()
         } label: {
             Image(systemName: "line.3.horizontal")
                 .font(.system(size: 20, weight: .medium))
@@ -272,29 +355,83 @@ struct ContentView: View {
         }
     }
 
+    private var accountDrawerEdgeSwipeCapture: some View {
+        Group {
+            if !showAccountDrawer {
+                GeometryReader { geo in
+                    let panelWidth = accountDrawerPanelWidth(for: geo.size.width)
+                    Color.clear
+                        .frame(width: Self.accountDrawerEdgeActivationWidth)
+                        .contentShape(Rectangle())
+                        .gesture(accountDrawerOpenDragGesture(panelWidth: panelWidth))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .allowsHitTesting(!showAccountDrawer)
+    }
+
+    private func accountDrawerOpenDragGesture(panelWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 10, coordinateSpace: .global)
+            .onChanged { value in
+                guard value.startLocation.x <= Self.accountDrawerEdgeActivationWidth,
+                      value.translation.width > 0 else { return }
+                accountDrawerDragOffset = min(value.translation.width, panelWidth)
+            }
+            .onEnded { value in
+                let threshold = panelWidth * 0.38
+                let shouldOpen = value.translation.width > threshold
+                    || value.predictedEndTranslation.width > threshold
+                withAnimation(Self.accountDrawerSpring) {
+                    if shouldOpen, value.startLocation.x <= Self.accountDrawerEdgeActivationWidth {
+                        showAccountDrawer = true
+                    }
+                    accountDrawerDragOffset = 0
+                }
+            }
+    }
+
+    private func accountDrawerCloseDragGesture(panelWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 10, coordinateSpace: .global)
+            .onChanged { value in
+                guard value.translation.width < 0 else { return }
+                accountDrawerDragOffset = max(value.translation.width, -panelWidth)
+            }
+            .onEnded { value in
+                let threshold = panelWidth * 0.38
+                let shouldClose = value.translation.width < -threshold
+                    || value.predictedEndTranslation.width < -threshold
+                withAnimation(Self.accountDrawerSpring) {
+                    if shouldClose {
+                        showAccountDrawer = false
+                    }
+                    accountDrawerDragOffset = 0
+                }
+            }
+    }
+
     private var accountDrawerOverlay: some View {
         GeometryReader { geo in
-            let panelWidth = min(296, geo.size.width * 0.88)
+            let panelWidth = accountDrawerPanelWidth(for: geo.size.width)
             ZStack(alignment: .leading) {
-                Color.black.opacity(showAccountDrawer ? 0.38 : 0)
+                Color.black.opacity(accountDrawerBackdropOpacity(panelWidth: panelWidth))
                     .ignoresSafeArea()
                     .contentShape(Rectangle())
                     .onTapGesture {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                            showAccountDrawer = false
-                        }
+                        closeAccountDrawer()
                     }
 
                 accountDrawerPanel(width: panelWidth)
                     .frame(maxHeight: .infinity)
                     .background(BespokeColor.pageBackground)
                     .shadow(color: .black.opacity(0.18), radius: 16, x: 6, y: 0)
-                    .offset(x: showAccountDrawer ? 0 : -panelWidth)
+                    .offset(x: accountDrawerPanelOffset(panelWidth: panelWidth))
+                    .gesture(accountDrawerCloseDragGesture(panelWidth: panelWidth))
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
-        .allowsHitTesting(showAccountDrawer)
-        .animation(.spring(response: 0.35, dampingFraction: 0.86), value: showAccountDrawer)
+        .allowsHitTesting(showAccountDrawer || accountDrawerDragOffset > 0)
+        .animation(Self.accountDrawerSpring, value: showAccountDrawer)
     }
 
     private func accountDrawerPanel(width: CGFloat) -> some View {
@@ -388,33 +525,70 @@ struct ContentView: View {
             Spacer(minLength: 0)
 
             if session.isLoggedIn {
-                VStack(spacing: 10) {
-                    Button(role: .destructive) {
-                        session.logout()
-                        generated = []
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                            showAccountDrawer = false
+                VStack(spacing: 16) {
+                    VStack(spacing: 0) {
+                        Button(role: .destructive) {
+                            session.logout()
+                            generated = []
+                            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
+                                showAccountDrawer = false
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "rectangle.portrait.and.arrow.right")
+                                    .font(.system(size: 17, weight: .medium))
+                                Text("Log out")
+                                    .font(BespokeFont.inter(16, weight: .semibold))
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 18)
+                            .contentShape(Rectangle())
                         }
-                    } label: {
-                        Label("Log out", systemImage: "rectangle.portrait.and.arrow.right")
-                            .font(BespokeFont.inter(16, weight: .semibold))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(BespokeColor.error)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(BespokeColor.error)
 
-                    Button(role: .destructive) {
-                        deleteAccountError = nil
-                        showDeleteAccountConfirmation = true
-                    } label: {
-                        Text("Delete account")
-                            .font(BespokeFont.inter(14, weight: .medium))
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 10)
+                        Rectangle()
+                            .fill(BespokeColor.sectionRule)
+                            .frame(height: 1)
+                            .padding(.horizontal, 18)
+
+                        Button(role: .destructive) {
+                            deleteAccountError = nil
+                            showDeleteAccountConfirmation = true
+                        } label: {
+                            Text("Delete account")
+                                .font(BespokeFont.inter(14, weight: .medium))
+                                .frame(maxWidth: .infinity)
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 16)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(BespokeColor.error.opacity(0.75))
                     }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(BespokeColor.error.opacity(0.92))
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(BespokeColor.cardBorder, lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.05), radius: 10, x: 0, y: 4)
+
+                    HStack(spacing: 4) {
+                        Text("Contact:")
+                            .foregroundStyle(BespokeColor.muted)
+                        Button {
+                            openAccountContactEmail()
+                        } label: {
+                            Text(accountContactEmailCopied ? "Copied!" : Self.accountContactEmail)
+                                .foregroundStyle(Self.accountContactGreen)
+                                .underline(!accountContactEmailCopied, color: Self.accountContactGreen)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .font(BespokeFont.inter(13, weight: .medium))
+                    .frame(maxWidth: .infinity)
                 }
             } else {
                 Button {
@@ -712,6 +886,7 @@ struct ContentView: View {
     }
 
     private func submitGenerate() {
+        duaFieldFocused = false
         guard session.isLoggedIn else {
             session.presentAuth()
             return
