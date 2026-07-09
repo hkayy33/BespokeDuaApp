@@ -1,6 +1,6 @@
 import Foundation
 
-/// Tracks how many dua generations a signed-in user has made on the current calendar day (device-local).
+/// Tracks how many bespoke and sunnah dua generations a signed-in user has made on the current calendar day (device-local).
 enum DailyGenerationQuota {
     /// Temporarily `0` to force the upgrade UI; use `7` (or your real cap) for production.
     static let freeDailyLimit = 7

@@ -7,7 +7,7 @@ import StoreKit
 @MainActor
 final class SubscriptionManager {
     /// Must match the product id in App Store Connect and the local StoreKit configuration file (if used).
-    static let plusMonthlyProductID = "com.Stylistic.bespokeDua.subscription.monthly"
+    static let plusMonthlyProductID = SubscriptionProducts.plusMonthlyID
 
     private(set) var product: Product?
 

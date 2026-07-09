@@ -33,9 +33,11 @@ struct bespokeDuaApp: App {
             }
             .animation(.easeInOut(duration: 0.4), value: showMainContent)
             .task {
-                // Short delay so the splash isn’t a flash; keep well under 1s for perceived startup speed.
+                async let warmup: Void = session.warmUpAppContent()
                 try? await Task.sleep(for: .milliseconds(400))
+                await warmup
                 showMainContent = true
+                session.startDuaFeedAutoRefresh()
             }
             .onOpenURL { url in
                 Task { await session.handleAuthURL(url) }

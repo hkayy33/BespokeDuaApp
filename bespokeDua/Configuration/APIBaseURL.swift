@@ -5,7 +5,7 @@ import Foundation
 /// - **DEBUG**: local .NET API (`http://127.0.0.1:8080/api`), same as `bespoke-dua-client` + `proxy.conf.json`.
 /// - **Release**: Fly.io production.
 /// - Override anytime with `BESPOKE_API_BASE_URL`; set `BESPOKE_API_USE_PRODUCTION=1` in Debug to hit Fly.io.
-enum APIBaseURL {
+enum APIBaseURL: Sendable {
     /// Matches `bespoke-dua-client` production (`environment.prod.ts`).
     /// Trailing `/` is required: without it, `URL(string: "Auth/login", relativeTo: base)` resolves to `…/Auth/login` instead of `…/api/Auth/login`.
     static let production = URL(string: "https://bespoke-app.fly.dev/api/")!

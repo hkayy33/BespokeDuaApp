@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "dhikr-card-backdrop.png",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}

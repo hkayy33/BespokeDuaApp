@@ -26,611 +26,437 @@ extension EnvironmentValues {
     }
 }
 
+// MARK: - Upgrade modal (presented from paywalled features via environment)
+
+private struct PresentUpgradeModalKey: EnvironmentKey {
+    static var defaultValue: (() -> Void)? { nil }
+}
+
+extension EnvironmentValues {
+    var presentUpgradeModal: (() -> Void)? {
+        get { self[PresentUpgradeModalKey.self] }
+        set { self[PresentUpgradeModalKey.self] = newValue }
+    }
+}
+
+private struct PresentUpgradeModalForDailyLimitKey: EnvironmentKey {
+    static var defaultValue: (() -> Void)? { nil }
+}
+
+extension EnvironmentValues {
+    var presentUpgradeModalForDailyLimit: (() -> Void)? {
+        get { self[PresentUpgradeModalForDailyLimitKey.self] }
+        set { self[PresentUpgradeModalForDailyLimitKey.self] = newValue }
+    }
+}
+
 struct ContentView: View {
     @Environment(AppSession.self) private var session
     @Environment(SubscriptionManager.self) private var subscriptionManager
     @Environment(\.scenePhase) private var scenePhase
-    @Environment(\.openURL) private var openURL
     @State private var requestText = ""
     @State private var generated: [DuaReceiver] = []
     @State private var generateInFlight = false
     @State private var generateError: String?
     @State private var selectedTab: MainTab = .home
     @State private var emptyRequestWarning = false
-    @State private var showAimModal = false
     @State private var savedDuaIDs: Set<UUID> = []
     /// Server `SavedDuas` id for each generated card, required to DELETE when unsaving.
     @State private var savedDuaServerIdByLocalId: [UUID: String] = [:]
     @FocusState private var duaFieldFocused: Bool
-    @State private var showAccountDrawer = false
-    @State private var accountDrawerDragOffset: CGFloat = 0
-    @State private var showDeleteAccountConfirmation = false
-    @State private var deleteAccountInFlight = false
-    @State private var deleteAccountError: String?
-    @State private var accountContactEmailCopied = false
     @State private var showUpgradeInfoModal = false
     @State private var upgradeModalBecauseQuota = false
     /// Bumps when quota should be re-read from `UserDefaults` (after a generation or app resume).
     @State private var dailyQuotaRefresh = 0
     @State private var showReflectionModal = false
     @State private var reflectionModalExplanations: [ExplanationModel] = []
+    @State private var showSaveDestinationModal = false
+    @State private var duaPendingSave: DuaReceiver?
+    @State private var isKeyboardVisible = false
+    @State private var mainTabBarHeight: CGFloat = 0
+    @State private var duaFeedTabRootID = UUID()
+    @State private var savedTabRootID = UUID()
+    @State private var profileTabRootID = UUID()
+    @State private var homePath = NavigationPath()
+    @State private var duaFeedPath = NavigationPath()
+    @State private var savedPath = NavigationPath()
+    @State private var homeActivityRefresh = 0
+    @State private var homeScrollPosition = ScrollPosition()
+    @State private var sunnahRestoreSnapshot: HomeRecentActivity.SunnahSnapshot?
+  @State private var nameOfTheDay: AllahNameDetail?
+    @State private var nameOfTheDayLoading = false
+    /// Bumps at local midnight (and on resume) so today's name always reloads.
+    @State private var nameOfTheDayDayKey = HomeNameOfTheDayService.localDayKey()
+    @State private var showNameReflectionModal = false
+    @State private var recentSearchesExpanded = false
+    @State private var sideMenu = BespokeSideMenuCoordinator()
+    @State private var hidesMainTabBar = false
 
-    private enum MainTab: Hashable {
-        case home
-        case saved
+    private var mainTabBarClearance: CGFloat {
+        (isKeyboardVisible || hidesMainTabBar) ? 0 : mainTabBarHeight
+    }
+
+    private var tabBarChromeHeight: CGFloat {
+        MainTabBarLayout.bottomCoverHeight(customTabBarHeight: mainTabBarHeight)
+    }
+
+    private var allowsSideMenuEdgeSwipe: Bool {
+        switch selectedTab {
+        case .home:
+            homePath.isEmpty
+        case .duaFeed:
+            duaFeedPath.isEmpty
+        case .saved:
+            savedPath.isEmpty
+        case .profile, .sunnah, .names:
+            false
+        }
     }
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            NavigationStack {
-                ScrollView {
-                    VStack(spacing: 0) {
-                        inputSection
-                        Rectangle()
-                            .fill(BespokeColor.sectionRule)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 1)
-                            .padding(.vertical, 12)
-                        duaResultsSection
-                    }
-                }
-                .scrollDismissesKeyboard(.interactively)
-                .background(BespokeColor.pageBackground)
-                .navigationTitle("BespokeDua")
-                .navigationBarTitleDisplayMode(.large)
-                .toolbarBackground(LinearGradient.bespokeNavBar, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
-                .toolbarColorScheme(.dark, for: .navigationBar)
-                .toolbar {
-                    accountLeadingToolbar()
-                }
-            }
-            .tabItem {
-                Label("Home", systemImage: "house.fill")
-            }
-            .tag(MainTab.home)
+        tabViewSessionHandlers
+    }
 
-            NavigationStack {
-                SavedDuasPageView()
-                    .background(BespokeColor.pageBackground)
-                    .navigationTitle("BespokeDua")
-                    .navigationBarTitleDisplayMode(.inline)
-                .toolbarBackground(LinearGradient.bespokeNavBar, for: .navigationBar)
-                .toolbarBackground(.visible, for: .navigationBar)
-                .toolbarColorScheme(.dark, for: .navigationBar)
-                .toolbar {
-                    accountLeadingToolbar()
-                }
-            }
-            .tabItem {
-                Label("Saved", systemImage: "bookmark.fill")
-            }
-            .tag(MainTab.saved)
-        }
-        .tint(BespokeColor.forest)
-        .environment(\.presentReflectionModal) { explanations in
-            reflectionModalExplanations = explanations
-            showReflectionModal = true
-        }
-        .overlay {
-            accountDrawerOverlay
-        }
-        .overlay(alignment: .leading) {
-            accountDrawerEdgeSwipeCapture
-        }
-        .overlay {
-            if showUpgradeInfoModal {
-                UpgradeInfoModalView(
-                    isPresented: $showUpgradeInfoModal,
-                    emphasizeDailyLimit: upgradeModalBecauseQuota
-                )
-                .transition(.opacity)
-            }
-        }
-        .overlay {
-            if showDeleteAccountConfirmation {
-                DeleteAccountConfirmationView(
-                    isPresented: $showDeleteAccountConfirmation,
-                    errorMessage: $deleteAccountError,
-                    inFlight: deleteAccountInFlight,
-                    onDelete: {
-                        Task { @MainActor in
-                            deleteAccountInFlight = true
-                            deleteAccountError = nil
-                            defer { deleteAccountInFlight = false }
-                            do {
-                                try await session.deleteAccount()
-                                generated = []
-                                withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                                    showAccountDrawer = false
-                                }
-                                showDeleteAccountConfirmation = false
-                            } catch {
-                                deleteAccountError =
-                                    (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                            }
-                        }
-                    }
-                )
-                .transition(.opacity)
-            }
-        }
-        .overlay {
-            if showAimModal {
-                BespokeCardModalView(isPresented: $showAimModal, title: "The aim") {
-                    Text(
-                        "We often hear, “Make du'a with yaqeen (full conviction),” but how do we do this? By calling upon Allah through His names and attributes, we remind ourselves of His mercy, power, and wisdom."
-                    )
-                    .font(BespokeFont.inter(16, weight: .regular))
-                    .foregroundStyle(BespokeColor.bodyText)
-                    .fixedSize(horizontal: false, vertical: true)
+    private var tabViewWithModalOverlays: some View {
+        tabViewWithModalOverlayStack
+            .animation(.easeInOut(duration: 0.28), value: showUpgradeInfoModal)
+            .animation(.easeInOut(duration: 0.28), value: showReflectionModal)
+            .animation(.easeInOut(duration: 0.28), value: showNameReflectionModal)
+            .animation(.easeInOut(duration: 0.28), value: showSaveDestinationModal)
+    }
 
-                    Text(
-                        "Bespoke Dua is built on this idea, connecting your personal du'as to the reassuring ropes our Lord has hung down, so you can ask with certainty, hope, and sincerity."
-                    )
-                    .font(BespokeFont.inter(16, weight: .regular))
-                    .foregroundStyle(BespokeColor.bodyText)
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-                .transition(.opacity)
+    private var tabViewWithModalOverlayStack: some View {
+        configuredTabView
+            .overlay { modalOverlayStack }
+    }
+
+    @ViewBuilder
+    private var modalOverlayStack: some View {
+        upgradeInfoOverlay
+        reflectionOverlay
+        nameReflectionOverlay
+        saveDestinationOverlay
+    }
+
+    @ViewBuilder
+    private var tabViewSessionHandlers: some View {
+        tabViewWithLifecycleHandlers
+            .fullScreenCover(isPresented: authSheetBinding) {
+                AuthModalView()
+                    .environment(session)
             }
-        }
-        .overlay {
-            if showReflectionModal {
-                BespokeCardModalView(
-                    isPresented: Binding(
-                        get: { showReflectionModal },
-                        set: { newValue in
-                            showReflectionModal = newValue
-                            if !newValue { reflectionModalExplanations = [] }
-                        }
-                    ),
-                    title: "Reflection"
-                ) {
-                    VStack(alignment: .leading, spacing: 20) {
-                        ForEach(reflectionModalExplanations) { exp in
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(exp.name)
-                                    .font(BespokeFont.inter(16, weight: .semibold))
-                                    .foregroundStyle(BespokeColor.nameGold)
-                                Text(exp.explanation)
-                                    .font(BespokeFont.inter(15, weight: .regular))
-                                    .foregroundStyle(BespokeColor.bodyText)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.vertical, 4)
-                        }
-                    }
-                }
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.28), value: showUpgradeInfoModal)
-        .animation(.easeInOut(duration: 0.28), value: showDeleteAccountConfirmation)
-        .animation(.easeInOut(duration: 0.28), value: showAimModal)
-        .animation(.easeInOut(duration: 0.28), value: showReflectionModal)
-        .onChange(of: session.isLoggedIn) { _, loggedIn in
-            if !loggedIn {
-                selectedTab = .home
-                subscriptionManager.clearDatabaseSubscriptionStatus()
-            } else {
+            .task(id: session.currentUser?.userId) {
                 subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
+                await subscriptionManager.refreshEntitlements()
+                session.scheduleSavedDuasRefresh()
+                session.scheduleDuaCollectionsRefresh()
+                await session.warmUpAppContent()
+                session.startDuaFeedAutoRefresh()
             }
-        }
-        .onChange(of: session.currentUser?.plan) { _, plan in
-            subscriptionManager.updateDatabaseSubscriptionStatus(plan: plan)
-        }
-        .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                dailyQuotaRefresh += 1
-                Task {
+    }
+
+    @ViewBuilder
+    private var tabViewWithLifecycleHandlers: some View {
+        tabViewWithModalOverlays
+            .onChange(of: session.isLoggedIn) { _, loggedIn in
+                if !loggedIn {
+                    selectedTab = .home
+                    homePath = NavigationPath()
+                    clearHomeSessionState()
+                    subscriptionManager.clearDatabaseSubscriptionStatus()
+                } else {
                     subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
-                    await subscriptionManager.refreshEntitlements()
                 }
             }
-        }
-        .onChange(of: showUpgradeInfoModal) { _, shown in
-            if !shown { upgradeModalBecauseQuota = false }
-        }
-        .fullScreenCover(isPresented: Binding(
-            get: { session.showAuthSheet },
-            set: { session.showAuthSheet = $0 }
-        )) {
-            AuthModalView()
-                .environment(session)
-        }
-        .task(id: session.currentUser?.userId) {
-            subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
-            await subscriptionManager.refreshEntitlements()
-        }
-    }
-
-    // MARK: - Account drawer
-
-    private static let accountContactEmail = "bespokedua@gmail.com"
-    private static let accountContactGreen = Color(red: 29 / 255, green: 100 / 255, blue: 58 / 255)
-    private static var accountContactMailURL: URL {
-        URL(string: "mailto:\(accountContactEmail)")!
-    }
-
-    private func openAccountContactEmail() {
-        let mailURL = Self.accountContactMailURL
-        #if canImport(UIKit)
-        guard UIApplication.shared.canOpenURL(mailURL) else {
-            copyAccountContactEmailToClipboard()
-            return
-        }
-        UIApplication.shared.open(mailURL) { success in
-            Task { @MainActor in
-                if !success {
-                    copyAccountContactEmailToClipboard()
-                }
+            .onChange(of: session.currentUser?.plan) { _, plan in
+                subscriptionManager.updateDatabaseSubscriptionStatus(plan: plan)
             }
-        }
-        #else
-        openURL(mailURL)
-        #endif
-    }
-
-    private func copyAccountContactEmailToClipboard() {
-        #if canImport(UIKit)
-        UIPasteboard.general.string = Self.accountContactEmail
-        #elseif canImport(AppKit)
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(Self.accountContactEmail, forType: .string)
-        #endif
-        accountContactEmailCopied = true
-        Task {
-            try? await Task.sleep(for: .seconds(2))
-            await MainActor.run {
-                accountContactEmailCopied = false
-            }
-        }
-    }
-
-    private static let accountDrawerEdgeActivationWidth: CGFloat = 28
-    private static let accountDrawerSpring = Animation.spring(response: 0.35, dampingFraction: 0.86)
-
-    private func accountDrawerPanelWidth(for width: CGFloat) -> CGFloat {
-        min(296, width * 0.88)
-    }
-
-    private func accountDrawerPanelOffset(panelWidth: CGFloat) -> CGFloat {
-        if showAccountDrawer {
-            return min(0, accountDrawerDragOffset)
-        }
-        return -panelWidth + min(accountDrawerDragOffset, panelWidth)
-    }
-
-    private func accountDrawerBackdropOpacity(panelWidth: CGFloat) -> Double {
-        let progress: CGFloat
-        if showAccountDrawer {
-            progress = 1 + accountDrawerDragOffset / panelWidth
-        } else {
-            progress = accountDrawerDragOffset / panelWidth
-        }
-        return Double(min(1, max(0, progress))) * 0.38
-    }
-
-    private func openAccountDrawer() {
-        withAnimation(Self.accountDrawerSpring) {
-            showAccountDrawer = true
-            accountDrawerDragOffset = 0
-        }
-    }
-
-    private func closeAccountDrawer() {
-        withAnimation(Self.accountDrawerSpring) {
-            showAccountDrawer = false
-            accountDrawerDragOffset = 0
-        }
-    }
-
-    private func accountDrawerToolbarButton() -> some View {
-        Button {
-            openAccountDrawer()
-        } label: {
-            Image(systemName: "line.3.horizontal")
-                .font(.system(size: 20, weight: .medium))
-                .symbolRenderingMode(.monochrome)
-                .foregroundStyle(.white)
-        }
-        .buttonStyle(.plain)
-        .tint(.white)
-        .accessibilityLabel("Menu")
-    }
-
-    @ToolbarContentBuilder
-    private func accountLeadingToolbar() -> some ToolbarContent {
-        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
-            ToolbarItem(placement: .topBarLeading) {
-                accountDrawerToolbarButton()
-            }
-            .sharedBackgroundVisibility(.hidden)
-        } else {
-            ToolbarItem(placement: .topBarLeading) {
-                accountDrawerToolbarButton()
-            }
-        }
-    }
-
-    private var accountDrawerEdgeSwipeCapture: some View {
-        Group {
-            if !showAccountDrawer {
-                GeometryReader { geo in
-                    let panelWidth = accountDrawerPanelWidth(for: geo.size.width)
-                    Color.clear
-                        .frame(width: Self.accountDrawerEdgeActivationWidth)
-                        .contentShape(Rectangle())
-                        .gesture(accountDrawerOpenDragGesture(panelWidth: panelWidth))
-                }
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .allowsHitTesting(!showAccountDrawer)
-    }
-
-    private func accountDrawerOpenDragGesture(panelWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 10, coordinateSpace: .global)
-            .onChanged { value in
-                guard value.startLocation.x <= Self.accountDrawerEdgeActivationWidth,
-                      value.translation.width > 0 else { return }
-                accountDrawerDragOffset = min(value.translation.width, panelWidth)
-            }
-            .onEnded { value in
-                let threshold = panelWidth * 0.38
-                let shouldOpen = value.translation.width > threshold
-                    || value.predictedEndTranslation.width > threshold
-                withAnimation(Self.accountDrawerSpring) {
-                    if shouldOpen, value.startLocation.x <= Self.accountDrawerEdgeActivationWidth {
-                        showAccountDrawer = true
-                    }
-                    accountDrawerDragOffset = 0
-                }
-            }
-    }
-
-    private func accountDrawerCloseDragGesture(panelWidth: CGFloat) -> some Gesture {
-        DragGesture(minimumDistance: 10, coordinateSpace: .global)
-            .onChanged { value in
-                guard value.translation.width < 0 else { return }
-                accountDrawerDragOffset = max(value.translation.width, -panelWidth)
-            }
-            .onEnded { value in
-                let threshold = panelWidth * 0.38
-                let shouldClose = value.translation.width < -threshold
-                    || value.predictedEndTranslation.width < -threshold
-                withAnimation(Self.accountDrawerSpring) {
-                    if shouldClose {
-                        showAccountDrawer = false
-                    }
-                    accountDrawerDragOffset = 0
-                }
-            }
-    }
-
-    private var accountDrawerOverlay: some View {
-        GeometryReader { geo in
-            let panelWidth = accountDrawerPanelWidth(for: geo.size.width)
-            ZStack(alignment: .leading) {
-                Color.black.opacity(accountDrawerBackdropOpacity(panelWidth: panelWidth))
-                    .ignoresSafeArea()
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        closeAccountDrawer()
-                    }
-
-                accountDrawerPanel(width: panelWidth)
-                    .frame(maxHeight: .infinity)
-                    .background(BespokeColor.pageBackground)
-                    .shadow(color: .black.opacity(0.18), radius: 16, x: 6, y: 0)
-                    .offset(x: accountDrawerPanelOffset(panelWidth: panelWidth))
-                    .gesture(accountDrawerCloseDragGesture(panelWidth: panelWidth))
-            }
-            .frame(width: geo.size.width, height: geo.size.height)
-        }
-        .allowsHitTesting(showAccountDrawer || accountDrawerDragOffset > 0)
-        .animation(Self.accountDrawerSpring, value: showAccountDrawer)
-    }
-
-    private func accountDrawerPanel(width: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack {
-                Spacer(minLength: 0)
-                Button {
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                        showAccountDrawer = false
-                    }
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.title2)
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(BespokeColor.muted)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Close")
-            }
-
-            VStack(spacing: 16) {
-                Image(systemName: session.isLoggedIn ? "person.crop.circle.fill" : "person.crop.circle.badge.plus")
-                    .font(.system(size: 72))
-                    .foregroundStyle(BespokeColor.forest)
-                    .accessibilityHidden(true)
-
-                if session.isLoggedIn {
-                    VStack(spacing: 8) {
-                        Text(session.currentUser?.username ?? "Account")
-                            .font(BespokeFont.display(22))
-                            .foregroundStyle(BespokeColor.bodyText)
-                            .multilineTextAlignment(.center)
-                            .padding(.bottom, 10)
-
-                        if let user = session.currentUser {
-                            let subscribed = subscriptionManager.isSubscribed
-                            Text(accountDrawerPlanHeadline(plan: user.plan, isSubscribed: subscribed))
-                                .font(BespokeFont.inter(15, weight: .semibold))
-                                .foregroundStyle(BespokeColor.forest)
-                                .multilineTextAlignment(.center)
-
-                            Text(accountDrawerPlanSubtitle(isSubscribed: subscribed, userId: user.userId))
-                                .font(BespokeFont.inter(13, weight: .regular))
-                                .foregroundStyle(BespokeColor.muted)
-                                .multilineTextAlignment(.center)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            if subscribed {
-                                Button {
-                                    upgradeModalBecauseQuota = false
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                                        showAccountDrawer = false
-                                    }
-                                    showUpgradeInfoModal = true
-                                } label: {
-                                    Label("Manage subscription", systemImage: "creditcard")
-                                        .font(BespokeFont.inter(16, weight: .semibold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 12)
-                                }
-                                .buttonStyle(.bordered)
-                                .tint(BespokeColor.forest)
-                                .padding(.top, 4)
-                            } else {
-                                Button {
-                                    upgradeModalBecauseQuota = false
-                                    withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                                        showAccountDrawer = false
-                                    }
-                                    showUpgradeInfoModal = true
-                                } label: {
-                                    Label("Upgrade", systemImage: "sparkles")
-                                        .font(BespokeFont.inter(16, weight: .semibold))
-                                        .frame(maxWidth: .infinity)
-                                        .padding(.vertical, 12)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .tint(BespokeColor.gold)
-                                .padding(.top, 4)
-                            }
-                        }
+            .onChange(of: scenePhase) { _, phase in
+                if phase == .active {
+                    nameOfTheDayDayKey = HomeNameOfTheDayService.localDayKey()
+                    dailyQuotaRefresh += 1
+                    session.startDuaFeedAutoRefresh()
+                    Task {
+                        subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
+                        await subscriptionManager.refreshEntitlements()
+                        await session.refreshDuaFeed(showLoading: false)
                     }
                 } else {
-                    Text("Not signed in")
-                        .font(BespokeFont.inter(16, weight: .medium))
-                        .foregroundStyle(BespokeColor.muted)
+                    session.stopDuaFeedAutoRefresh()
                 }
             }
-            .frame(maxWidth: .infinity)
+            .task {
+                while !Task.isCancelled {
+                    let seconds = HomeNameOfTheDayService.secondsUntilNextLocalMidnight()
+                    try? await Task.sleep(for: .seconds(seconds))
+                    guard !Task.isCancelled else { break }
+                    nameOfTheDayDayKey = HomeNameOfTheDayService.localDayKey()
+                }
+            }
+            .onChange(of: showUpgradeInfoModal) { _, shown in
+                if !shown { upgradeModalBecauseQuota = false }
+            }
+    }
 
-            Spacer(minLength: 0)
+    private var authSheetBinding: Binding<Bool> {
+        Binding(
+            get: { session.showAuthSheet },
+            set: { session.showAuthSheet = $0 }
+        )
+    }
 
-            if session.isLoggedIn {
-                VStack(spacing: 16) {
-                    VStack(spacing: 0) {
-                        Button(role: .destructive) {
-                            session.logout()
-                            generated = []
-                            withAnimation(.spring(response: 0.35, dampingFraction: 0.86)) {
-                                showAccountDrawer = false
-                            }
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "rectangle.portrait.and.arrow.right")
-                                    .font(.system(size: 17, weight: .medium))
-                                Text("Log out")
-                                    .font(BespokeFont.inter(16, weight: .semibold))
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 18)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(BespokeColor.error)
-
-                        Rectangle()
-                            .fill(BespokeColor.sectionRule)
-                            .frame(height: 1)
-                            .padding(.horizontal, 18)
-
-                        Button(role: .destructive) {
-                            deleteAccountError = nil
-                            showDeleteAccountConfirmation = true
-                        } label: {
-                            Text("Delete account")
-                                .font(BespokeFont.inter(14, weight: .medium))
-                                .frame(maxWidth: .infinity)
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 16)
-                                .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(BespokeColor.error.opacity(0.75))
+    private var configuredTabView: some View {
+        tabViewWithTabBarOverlay
+            .bespokeSideMenuOverlay(coordinator: sideMenu, allowsEdgeSwipe: allowsSideMenuEdgeSwipe)
+            .fullScreenCover(isPresented: sideMenuPresentationBinding(\.accountSettingsPresented)) {
+                AccountSettingsView(initialTab: sideMenu.accountSettingsTab)
+                    .environment(sideMenu)
+                    .environment(\.openSideMenu, { sideMenu.open() })
+                    .onDisappear {
+                        sideMenu.accountSettingsTab = .profile
                     }
-                    .background(Color.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .stroke(BespokeColor.cardBorder, lineWidth: 1)
+            }
+            .onPreferenceChange(MainTabBarHeightKey.self) { mainTabBarHeight = $0 }
+            #if canImport(UIKit)
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notification in
+                guard
+                    let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect
+                else { return }
+                let screenHeight = UIScreen.main.bounds.height
+                isKeyboardVisible = frame.minY < screenHeight - 1
+            }
+            #endif
+    }
+
+    private var tabViewWithTabBarOverlay: some View {
+        tabViewWithPresentationEnvironments
+            .overlay(alignment: .bottom) {
+                bottomTabBarOverlay
+            }
+            .animation(.easeOut(duration: 0.2), value: isKeyboardVisible)
+            .animation(.easeOut(duration: 0.2), value: hidesMainTabBar)
+    }
+
+    private var tabViewWithPresentationEnvironments: some View {
+        tabViewWithCoreEnvironments
+            .environment(\.presentReflectionModal) { explanations in
+                reflectionModalExplanations = explanations
+                showReflectionModal = true
+            }
+            .environment(\.presentUpgradeModal) {
+                upgradeModalBecauseQuota = false
+                showUpgradeInfoModal = true
+            }
+            .environment(\.presentUpgradeModalForDailyLimit) {
+                presentUpgradeSheetForDailyLimit()
+            }
+            .environment(\.presentSaveDuaModal) { dua in
+                Task { await handleSaveTap(dua) }
+            }
+    }
+
+    private var tabViewWithCoreEnvironments: some View {
+        mainTabView
+            .toolbar(.hidden, for: .tabBar)
+            .toolbarBackground(.hidden, for: .tabBar)
+            .safeAreaPadding(.bottom, hidesMainTabBar ? -tabBarChromeHeight : 0)
+            #if canImport(UIKit)
+            .background {
+                SystemTabBarHider(isHidden: true)
+                    .frame(width: 0, height: 0)
+            }
+            #endif
+            .environment(sideMenu)
+            .environment(\.openSideMenu, { sideMenu.open() })
+            .environment(\.mainTabBarClearance, mainTabBarClearance)
+            .environment(\.mainTabBarHidden, hidesMainTabBar)
+            .environment(\.mainTabBarVisibility, MainTabBarVisibilityAction(setHidden: { hidesMainTabBar = $0 }))
+            .environment(\.selectMainTab, SelectMainTabAction { selectedTab = $0 })
+            .onChange(of: selectedTab) { previousTab, _ in
+                resetTabRootIfNeeded(previousTab)
+            }
+    }
+
+    private var mainTabView: some View {
+        TabView(selection: $selectedTab) {
+            homeTab
+            duaFeedTab
+            savedTab
+            profileTab
+        }
+        .disablingTabBarMinimize()
+    }
+
+    private var homeTab: some View {
+        NavigationStack(path: $homePath) {
+            homeNavigationRoot
+                .navigationDestination(for: HomeRoute.self) { route in
+                    homeRouteDestination(route)
+                }
+                .onChange(of: homePath.count) { oldCount, newCount in
+                    if newCount < oldCount, newCount > 0 {
+                        homeActivityRefresh += 1
+                    }
+                }
+        }
+        .environment(\.openSideMenu, { sideMenu.open() })
+        .tag(MainTab.home)
+    }
+
+    @ViewBuilder
+    private func homeRouteDestination(_ route: HomeRoute) -> some View {
+        switch route {
+        case .bespoke:
+            bespokeDuaFlowView
+        case .sunnah:
+            SunnahDuasView(
+                restoreSnapshot: sunnahRestoreSnapshot,
+                onActivityChanged: { homeActivityRefresh += 1 }
+            )
+        case .names:
+            NamesLibraryView { destination in
+                homePath.append(HomeRoute.namesCategory(destination))
+            }
+        case let .namesCategory(destination):
+            NamesFilteredListView(destination: destination)
+        }
+    }
+
+    private var duaFeedTab: some View {
+        NavigationStack(path: $duaFeedPath) {
+            DuaFeedView(
+                navigationPath: $duaFeedPath,
+                isTabActive: selectedTab == .duaFeed
+            )
+                .toolbar(.hidden, for: .navigationBar)
+                .bespokeStyledNavigationBar(showsMainBar: false)
+                .navigationBarBackButtonHidden(true)
+                #if canImport(UIKit)
+                .background {
+                    BespokeNavBarLeadingButtonHost(
+                        icon: .menu,
+                        onTap: { sideMenu.open() },
+                        overlaysWhenBarHidden: true,
+                        isVisible: duaFeedPath.isEmpty
                     )
-                    .shadow(color: .black.opacity(0.05), radius: 10, x: 0, y: 4)
+                }
+                #endif
+        }
+        .environment(\.openSideMenu, { sideMenu.open() })
+        .id(duaFeedTabRootID)
+        .tag(MainTab.duaFeed)
+    }
 
-                    HStack(spacing: 4) {
-                        Text("Contact:")
-                            .foregroundStyle(BespokeColor.muted)
-                        Button {
-                            openAccountContactEmail()
-                        } label: {
-                            Text(accountContactEmailCopied ? "Copied!" : Self.accountContactEmail)
-                                .foregroundStyle(Self.accountContactGreen)
-                                .underline(!accountContactEmailCopied, color: Self.accountContactGreen)
-                        }
-                        .buttonStyle(.plain)
+    private var savedTab: some View {
+        NavigationStack(path: $savedPath) {
+            HeartsDuaHubView(navigationPath: $savedPath)
+                .toolbar(.hidden, for: .navigationBar)
+                .bespokeStyledNavigationBar(showsMainBar: false)
+                .navigationBarBackButtonHidden(true)
+        }
+        .environment(\.openSideMenu, { sideMenu.open() })
+        .id(savedTabRootID)
+        .tag(MainTab.saved)
+    }
+
+    private var profileTab: some View {
+        NavigationStack {
+            ProfileView()
+                .bespokeMainNavigationToolbar(title: MainTab.profile.navigationTitle)
+                .bespokeStyledNavigationBar()
+        }
+        .environment(\.openSideMenu, { sideMenu.open() })
+        .id(profileTabRootID)
+        .tag(MainTab.profile)
+    }
+
+    @ViewBuilder
+    private var bottomTabBarOverlay: some View {
+        if !isKeyboardVisible, !hidesMainTabBar {
+            MainTabBar(
+                selection: $selectedTab,
+                homeNavigationDepth: homePath.count,
+                savedNavigationDepth: savedPath.count,
+                onPopHomeStack: {
+                    guard !homePath.isEmpty else { return }
+                    var transaction = Transaction()
+                    transaction.disablesAnimations = true
+                    withTransaction(transaction) {
+                        homePath.removeLast(homePath.count)
                     }
-                    .font(BespokeFont.inter(13, weight: .medium))
-                    .frame(maxWidth: .infinity)
+                },
+                onPopSavedStack: {
+                    guard !savedPath.isEmpty else { return }
+                    withAnimation(.easeInOut(duration: 0.32)) {
+                        savedPath.removeLast(savedPath.count)
+                    }
                 }
-            } else {
-                Button {
-                    showAccountDrawer = false
-                    session.presentAuth()
-                } label: {
-                    Text("Sign in")
-                        .font(BespokeFont.inter(17, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(BespokeColor.forest)
+            )
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    @ViewBuilder
+    private var upgradeInfoOverlay: some View {
+        if showUpgradeInfoModal {
+            UpgradeInfoModalView(
+                isPresented: $showUpgradeInfoModal,
+                emphasizeDailyLimit: upgradeModalBecauseQuota
+            )
+            .transition(.opacity)
+        }
+    }
+
+    @ViewBuilder
+    private var reflectionOverlay: some View {
+        if showReflectionModal {
+            reflectionModalContent()
+        }
+    }
+
+    private func reflectionModalContent() -> some View {
+        ReflectionModalOverlay(
+            isPresented: $showReflectionModal,
+            explanations: $reflectionModalExplanations
+        )
+    }
+
+    @ViewBuilder
+    private var nameReflectionOverlay: some View {
+        if showNameReflectionModal, let nameOfTheDay {
+            nameReflectionModalContent(nameOfTheDay)
+        }
+    }
+
+    private func nameReflectionModalContent(_ nameOfTheDay: AllahNameDetail) -> some View {
+        NameReflectionModalOverlay(
+            isPresented: $showNameReflectionModal,
+            nameOfTheDay: nameOfTheDay
+        )
+    }
+
+    @ViewBuilder
+    private var saveDestinationOverlay: some View {
+        if showSaveDestinationModal, let dua = duaPendingSave {
+            saveDestinationModalContent(for: dua)
+        }
+    }
+
+    private func saveDestinationModalContent(for dua: DuaReceiver) -> some View {
+        SaveDuaDestinationModalView(
+            isPresented: $showSaveDestinationModal,
+            dua: dua,
+            canUseCollections: subscriptionManager.isSubscribed,
+            onSave: { dua, collectionIds in
+                await saveDua(dua, toCollectionIds: collectionIds)
+            },
+            onAddCollections: {
+                showSaveDestinationModal = false
+                duaPendingSave = nil
+                selectedTab = .saved
             }
-        }
-        .padding(24)
-        .padding(.top, 8)
-        .frame(width: width)
-        .frame(maxHeight: .infinity, alignment: .top)
-    }
-
-    private func accountDrawerPlanHeadline(plan: String, isSubscribed: Bool) -> String {
-        if isSubscribed {
-            return "Bespoke Plus"
-        }
-        let p = plan.trimmingCharacters(in: .whitespacesAndNewlines)
-        if p.isEmpty || p.caseInsensitiveCompare("free") == .orderedSame {
-            return "Free Plan"
-        }
-        if p.lowercased().hasSuffix("plan") {
-            return "✨ \(p)"
-        }
-        return "✨ \(p) Plan"
-    }
-
-    private func accountDrawerPlanSubtitle(isSubscribed: Bool, userId: Int) -> String {
-        if isSubscribed {
-            return "Unlimited bespoke duas."
-        }
-        let remaining = DailyGenerationQuota.duasRemainingToday(userId: userId)
-        let cap = DailyGenerationQuota.freeDailyLimit
-        return "\(remaining)/\(cap) duas left today · Upgrade for unlimited"
+        )
+        .transition(.opacity)
     }
 
     /// Free tier has used today’s allowance; primary CTA becomes Upgrade instead of Generate.
@@ -645,75 +471,454 @@ struct ContentView: View {
         showUpgradeInfoModal = true
     }
 
+    // MARK: - Home dashboard
+
+    private enum HomeRoute: Hashable {
+        case bespoke
+        case sunnah
+        case names
+        case namesCategory(NamesLibraryDestination)
+    }
+
+    private var recentBespokeActivity: HomeRecentActivity.Snapshot? {
+        guard let uid = session.currentUser?.userId else { return nil }
+        _ = homeActivityRefresh
+        return HomeRecentActivity.load(userId: uid)
+    }
+
+    private var recentSunnahActivity: HomeRecentActivity.SunnahSnapshot? {
+        guard let uid = session.currentUser?.userId else { return nil }
+        _ = homeActivityRefresh
+        return HomeRecentActivity.loadSunnah(userId: uid)
+    }
+
+    private var showsHomeContinueSection: Bool {
+        recentBespokeActivity != nil || recentSunnahActivity != nil
+    }
+
+    private var showsHomeMainNavigationBar: Bool {
+        homePath.isEmpty
+    }
+
+    @ViewBuilder
+    private var homeNavigationRoot: some View {
+        homeNavigationScrollView
+            .bespokeStyledNavigationBar(showsMainBar: showsHomeMainNavigationBar)
+            .modifier(HomeMainNavigationChrome(
+                showsMainBar: showsHomeMainNavigationBar,
+                title: MainTab.home.navigationTitle
+            ))
+            .animation(nil, value: showsHomeMainNavigationBar)
+    }
+
+    private var homeNavigationScrollView: some View {
+        ScrollView {
+            homeDashboardContent
+                .padding(.bottom, mainTabBarClearance)
+        }
+        .scrollPosition($homeScrollPosition)
+        .scrollIndicators(.hidden, axes: .vertical)
+        .background {
+            LinearGradient.bespokeHomeCanvas
+                .ignoresSafeArea()
+        }
+        .id(HomeScrollIdentity.root)
+    }
+
+    private enum HomeCardLayout {
+        static let sectionSpacing: CGFloat = 32
+        static let cardSpacing: CGFloat = HomeFeatureCardLayout.cardSpacing
+        static let horizontalPadding: CGFloat = HomeFeatureCardLayout.pageHorizontalPadding
+        /// Pulls action cards up toward the bottom edge of the hero artwork.
+        static let heroCardsOverlap: CGFloat = 96
+        static let heroArtHeight: CGFloat = 280
+        static let profileTrailingInset: CGFloat = 16
+        static let profileIconSize: CGFloat = 22
+        /// At `heroArtHeight`, distance from the PNG’s trailing edge to the chain centre line.
+        static let heroArtChainAnchorFromTrailing: CGFloat = 0
+        /// Extra nudge after profile alignment (negative = left, positive = right).
+        static let heroArtHorizontalFineTune: CGFloat = 35
+        static let heroHeadlineTopPadding: CGFloat = 44
+        static let heroStarHeight: CGFloat = 17
+        /// Positive values move the star down relative to the headline.
+        static let heroStarVerticalNudge: CGFloat = 8
+        /// Lifts hero art so the arch point is slightly clipped at the top.
+        static let heroArtVerticalOffset: CGFloat = -24
+
+        static var profileCenterFromTrailing: CGFloat {
+            profileTrailingInset + profileIconSize / 2
+        }
+
+        static var heroArtTrailingPadding: CGFloat {
+            profileTrailingInset
+        }
+
+        static var heroArtHorizontalOffset: CGFloat {
+            let scaledChainAnchor = heroArtChainAnchorFromTrailing * (heroArtHeight / 280)
+            return profileCenterFromTrailing - profileTrailingInset - scaledChainAnchor + heroArtHorizontalFineTune
+        }
+
+        static var heroStarOffsetY: CGFloat {
+            -(heroHeadlineTopPadding / 2 + heroStarHeight / 2) + heroStarVerticalNudge
+        }
+    }
+
+    private var homeDashboardContent: some View {
+        VStack(spacing: HomeCardLayout.sectionSpacing) {
+            VStack(spacing: 0) {
+                homeHeroSection
+
+                VStack(spacing: HomeCardLayout.cardSpacing) {
+                    HomeFeatureCard(content: .bespoke) {
+                        openBespokeFlow(restore: nil)
+                    }
+
+                    HomeFeatureCard(content: .sunnah) {
+                        openSunnahFlow(restore: nil)
+                    }
+
+                    HomeFeatureCard(content: .names) {
+                        homePath.append(HomeRoute.names)
+                    }
+                }
+                .padding(.horizontal, HomeCardLayout.horizontalPadding)
+                .padding(.top, -HomeCardLayout.heroCardsOverlap)
+            }
+
+            homeNameADaySection
+
+            if showsHomeContinueSection {
+                homeContinueSection
+            }
+        }
+        .padding(.bottom, 24)
+    }
+
+    private func homeSectionHeader(
+        title: String,
+        titleSize: CGFloat = 22,
+        actionTitle: String? = nil,
+        action: (() -> Void)? = nil
+    ) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(title)
+                .font(BespokeFont.display(titleSize))
+                .foregroundStyle(BespokeColor.forest)
+
+            Spacer(minLength: 8)
+
+            if let actionTitle, let action {
+                Button(action: action) {
+                    HStack(spacing: 4) {
+                        Text(actionTitle)
+                            .font(BespokeFont.inter(14, weight: .medium))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                    }
+                    .foregroundStyle(BespokeColor.homeGold)
+                }
+                .buttonStyle(BespokePlainButtonStyle())
+            }
+        }
+        .padding(.horizontal, HomeCardLayout.horizontalPadding)
+    }
+
+    private var homeHeroSection: some View {
+        ZStack(alignment: .topLeading) {
+            Image("HomeHeroArt")
+                .renderingMode(.original)
+                .resizable()
+                .scaledToFit()
+                .frame(height: HomeCardLayout.heroArtHeight)
+                .frame(maxWidth: .infinity, maxHeight: HomeCardLayout.heroArtHeight, alignment: .trailing)
+                .padding(.trailing, HomeCardLayout.heroArtTrailingPadding)
+                .offset(
+                    x: HomeCardLayout.heroArtHorizontalOffset,
+                    y: HomeCardLayout.heroArtVerticalOffset
+                )
+                .frame(maxWidth: .infinity)
+                .frame(height: HomeCardLayout.heroArtHeight, alignment: .top)
+                .clipped()
+                .allowsHitTesting(false)
+
+            VStack(alignment: .leading, spacing: 10) {
+                homeHeroHeadline
+
+                Text("Your feelings matter. Share, discover, and grow closer to Allah through dua.")
+                    .font(BespokeFont.inter(14, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+                    .multilineTextAlignment(.leading)
+                    .lineSpacing(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: 268, alignment: .leading)
+            .padding(.horizontal, HomeCardLayout.horizontalPadding)
+            .padding(.top, HomeCardLayout.heroHeadlineTopPadding)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: HomeCardLayout.heroArtHeight, alignment: .topLeading)
+    }
+
+    private var homeHeroHeadline: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 0) {
+                Text("How can ")
+                Text("we")
+                    .overlay(alignment: .top) {
+                        HomeHeroStarMark()
+                            .offset(y: HomeCardLayout.heroStarOffsetY)
+                    }
+                Text(" help")
+            }
+
+            Text("you make dua today?")
+        }
+        .font(BespokeFont.display(26))
+        .foregroundStyle(BespokeColor.forest)
+        .multilineTextAlignment(.leading)
+        .lineSpacing(2)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var homeNameADaySection: some View {
+        Group {
+            if nameOfTheDayLoading, nameOfTheDay == nil {
+                HomeNameOfTheDayCard.loading
+            } else if let nameOfTheDay {
+                HomeNameOfTheDayCard(name: nameOfTheDay) {
+                    showNameReflectionModal = true
+                }
+            } else {
+                HomeNameOfTheDayCard.dhikrFallback
+            }
+        }
+        .padding(.horizontal, HomeCardLayout.horizontalPadding)
+        .task(id: "\(homeActivityRefresh)-\(nameOfTheDayDayKey)") {
+            await loadNameOfTheDay()
+        }
+    }
+
+    @MainActor
+    private func loadNameOfTheDay() async {
+        nameOfTheDayLoading = true
+        defer { nameOfTheDayLoading = false }
+
+        nameOfTheDay = try? await HomeNameOfTheDayService.todaysName()
+    }
+
+    private var homeContinueSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Most recent searches")
+                        .font(BespokeFont.display(22))
+                        .foregroundStyle(BespokeColor.forest)
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            recentSearchesExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text("View all")
+                                .font(BespokeFont.inter(14, weight: .medium))
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 10, weight: .semibold))
+                                .rotationEffect(.degrees(recentSearchesExpanded ? 0 : -90))
+                                .animation(.easeInOut(duration: 0.25), value: recentSearchesExpanded)
+                        }
+                        .foregroundStyle(BespokeColor.homeGold)
+                    }
+                    .buttonStyle(BespokePlainButtonStyle())
+                }
+
+                Text("Return to what you were looking for")
+                    .font(BespokeFont.inter(14, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.horizontal, HomeCardLayout.horizontalPadding)
+
+            if recentSearchesExpanded {
+                VStack(spacing: 0) {
+                    if let activity = recentBespokeActivity {
+                        HomeRecentSearchRow(
+                            symbolName: "square.and.pencil",
+                            iconBackground: BespokeColor.homeMintIcon,
+                            iconForeground: BespokeColor.forest,
+                            title: "Bespoke Dua",
+                            queryText: activity.requestText,
+                            statusText: continueStatusText(
+                                isGenerating: activity.isGenerating && activity.generated.isEmpty,
+                                generatingLabel: "Crafting your duas…",
+                                savedAt: activity.savedAt
+                            ),
+                            showDivider: recentSunnahActivity != nil
+                        ) {
+                            openBespokeFlow(restore: activity)
+                        }
+                    }
+
+                    if let activity = recentSunnahActivity {
+                        HomeRecentSearchRow(
+                            symbolName: "book.closed.fill",
+                            iconBackground: BespokeColor.homeBeigeIcon,
+                            iconForeground: BespokeColor.homeGold,
+                            title: "Sunnah Duas",
+                            queryText: activity.requestText,
+                            statusText: continueStatusText(
+                                isGenerating: activity.isGenerating && activity.categories.isEmpty,
+                                generatingLabel: "Finding your duas…",
+                                savedAt: activity.savedAt
+                            ),
+                            showDivider: false
+                        ) {
+                            openSunnahFlow(restore: activity)
+                        }
+                    }
+                }
+                .homeListChrome(cornerRadius: 14)
+                .padding(.horizontal, HomeCardLayout.horizontalPadding)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+
+    private func continueStatusText(isGenerating: Bool, generatingLabel: String, savedAt: Date) -> String {
+        isGenerating ? generatingLabel : relativeDateString(for: savedAt)
+    }
+
+    private var bespokeDuaFlowView: some View {
+        BespokeFlowScreen(title: "Bespoke my dua", onExit: persistBespokeSession) {
+            ScrollView {
+                VStack(spacing: 0) {
+                    inputSection
+
+                    if !generateInFlight {
+                        Rectangle()
+                            .fill(BespokeColor.sectionRule)
+                            .frame(maxWidth: .infinity)
+                            .frame(height: 1)
+                            .padding(.top, 12)
+                            .padding(.bottom, 12)
+                        duaResultsSection
+                    }
+                }
+                .padding(.bottom, mainTabBarClearance)
+            }
+            .scrollIndicators(.hidden, axes: .vertical)
+            .scrollDismissesKeyboard(.interactively)
+            .background(BespokeColor.pageBackground)
+        }
+    }
+
+    private func persistBespokeSession() {
+        guard let uid = session.currentUser?.userId else { return }
+        let trimmed = requestText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        if generateInFlight {
+            HomeRecentActivity.save(
+                userId: uid,
+                requestText: trimmed,
+                generated: generated,
+                isGenerating: true
+            )
+        } else if !generated.isEmpty {
+            HomeRecentActivity.save(
+                userId: uid,
+                requestText: trimmed,
+                generated: generated,
+                isGenerating: false
+            )
+        }
+        homeActivityRefresh += 1
+    }
+
+    private func openBespokeFlow(restore activity: HomeRecentActivity.Snapshot?) {
+        sunnahRestoreSnapshot = nil
+        if let activity {
+            requestText = activity.requestText
+            generated = HomeRecentActivity.duaReceivers(from: activity)
+            savedDuaIDs = []
+            savedDuaServerIdByLocalId = [:]
+
+            if activity.isGenerating && generated.isEmpty && !generateInFlight {
+                let trimmed = activity.requestText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                generateError = nil
+                generateInFlight = true
+                Task {
+                    await runGenerate(trimmed: trimmed)
+                }
+            }
+        } else {
+            requestText = ""
+            generated = []
+            savedDuaIDs = []
+            savedDuaServerIdByLocalId = [:]
+        }
+        generateError = nil
+        emptyRequestWarning = false
+        homePath.append(HomeRoute.bespoke)
+    }
+
+    private func openSunnahFlow(restore snapshot: HomeRecentActivity.SunnahSnapshot?) {
+        sunnahRestoreSnapshot = snapshot
+        homePath.append(HomeRoute.sunnah)
+    }
+
+    private func relativeDateString(for date: Date) -> String {
+        let interval = Date.now.timeIntervalSince(date)
+        if interval < 60 {
+            return "Just now"
+        }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        return formatter.localizedString(for: date, relativeTo: .now)
+    }
+
     // MARK: - Input (`input-section.scss`)
 
     private var inputSection: some View {
-        VStack(spacing: 16) {
-            VStack(spacing: 8) {
-                Text("Write your heart’s duas")
-                    .font(BespokeFont.display(26))
-                    .foregroundStyle(BespokeColor.forest)
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: .infinity)
-
-                Button {
-                    showAimModal = true
-                } label: {
-                    Label("The aim ?", systemImage: "sparkles")
-                        .font(BespokeFont.inter(14, weight: .medium))
-                        .foregroundStyle(BespokeColor.nameGold)
-                }
-                .buttonStyle(.plain)
-            }
-            .padding(.top, 11)
+        VStack(spacing: 20) {
+            Text("Write your heart’s duas")
+                .font(BespokeFont.display(28))
+                .foregroundStyle(BespokeColor.forest)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 16)
 
             if session.isLoggedIn, let quotaUid = session.currentUser?.userId, !subscriptionManager.isSubscribed {
                 let remaining = DailyGenerationQuota.duasRemainingToday(userId: quotaUid)
                 let cap = DailyGenerationQuota.freeDailyLimit
-                HStack(spacing: 8) {
-                    Text("\(remaining)/\(cap) duas left")
-                        .font(BespokeFont.inter(15, weight: .semibold))
-                        .foregroundStyle(BespokeColor.forest)
-                }
-                .padding(.vertical, 10)
-                .padding(.horizontal, 14)
-                .background(BespokeColor.forest.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(BespokeColor.forest.opacity(0.14), lineWidth: 1)
-                )
-                .accessibilityElement(children: .combine)
-                .accessibilityLabel("\(remaining) of \(cap) free duas left today")
-                .id(dailyQuotaRefresh)
+                Text("\(remaining)/\(cap) duas left")
+                    .font(BespokeFont.inter(15, weight: .semibold))
+                    .foregroundStyle(BespokeColor.forest)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 16)
+                    .background(BespokeColor.sectionRule)
+                    .clipShape(Capsule())
+                    .frame(maxWidth: .infinity)
+                    .accessibilityLabel("\(remaining) of \(cap) free duas left today")
+                    .id(dailyQuotaRefresh)
             }
 
             VStack(alignment: .leading, spacing: 12) {
-
-                ZStack(alignment: .topLeading) {
-                    if requestText.isEmpty {
-                        Text("Type your dua here…")
-                            .font(BespokeFont.inter(16, weight: .regular))
-                            .foregroundStyle(BespokeColor.subtle)
-                            .padding(.top, 12)
-                            .padding(.leading, 10)
-                            .allowsHitTesting(false)
-                    }
-                    TextEditor(text: $requestText)
-                        .font(BespokeFont.inter(16, weight: .regular))
-                        .foregroundStyle(BespokeColor.bodyText)
-                        .scrollContentBackground(.hidden)
-                        .frame(minHeight: 120)
-                        .focused($duaFieldFocused)
-                }
-                .padding(12)
-                .background(BespokeColor.inputSurface)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(duaFieldFocused ? BespokeColor.gold : BespokeColor.forest.opacity(0.12), lineWidth: duaFieldFocused ? 2 : 1)
+                BespokePlaceholderTextEditor(
+                    text: $requestText,
+                    placeholder: "Type your dua here…",
+                    focus: $duaFieldFocused
                 )
-                .shadow(color: duaFieldFocused ? BespokeColor.gold.opacity(0.12) : .black.opacity(0.04), radius: 8, x: 0, y: 2)
+                .padding(12)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(duaFieldFocused ? BespokeColor.gold : BespokeColor.inputBorder, lineWidth: duaFieldFocused ? 2 : 1)
+                )
 
                 Text("Example: “O Allah, grant me success in…”")
                     .font(BespokeFont.inter(13, weight: .regular))
@@ -745,9 +950,10 @@ struct ContentView: View {
                         .padding(.vertical, 16)
                         .background(LinearGradient.bespokeGold)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .bespokeButtonHitArea(cornerRadius: 16)
                         .shadow(color: .black.opacity(0.14), radius: 12, x: 0, y: 6)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BespokePlainButtonStyle())
                 } else {
                     Button {
                         submitGenerate()
@@ -768,9 +974,10 @@ struct ContentView: View {
                         .padding(.vertical, 16)
                         .background(LinearGradient.bespokeGold)
                         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .bespokeButtonHitArea(cornerRadius: 16)
                         .shadow(color: generateInFlight ? .clear : .black.opacity(0.14), radius: 12, x: 0, y: 6)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BespokePlainButtonStyle())
                     .disabled(generateInFlight)
                     .opacity(generateInFlight ? 0.72 : 1)
                 }
@@ -788,9 +995,23 @@ struct ContentView: View {
                     .font(BespokeFont.inter(14, weight: .medium))
                     .foregroundStyle(BespokeColor.error)
             }
+
+            if generateInFlight {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Preparing your duas")
+                        .font(BespokeFont.inter(20, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                    DuaCraftingDhikrCarousel()
+                }
+                .padding(.top, 4)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
+        .animation(.easeInOut(duration: 0.25), value: generateInFlight)
         .padding(.horizontal, 20)
-        .padding(.top, 8)
+        .padding(.top, 12)
         .padding(.bottom, 24)
         .frame(maxWidth: .infinity)
     }
@@ -799,87 +1020,60 @@ struct ContentView: View {
 
     private var duaResultsSection: some View {
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Your duas")
-                    .font(BespokeFont.inter(20, weight: .semibold))
-                    .foregroundStyle(BespokeColor.forest)
-//                Text("Personalised with His names and attributes")
-//                    .font(BespokeFont.inter(14, weight: .regular))
-//                    .foregroundStyle(BespokeColor.muted)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 4)
+            Text("Your duas")
+                .font(BespokeFont.inter(20, weight: .semibold))
+                .foregroundStyle(BespokeColor.forest)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4)
 
-            if generateInFlight {
-                VStack(spacing: 14) {
-                    BespokeLoaderDots()
-                    Text("Crafting your duas…")
-                        .font(BespokeFont.inter(15, weight: .medium))
-                        .foregroundStyle(BespokeColor.muted)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 36)
-                .padding(.horizontal, 20)
-                .background(Color.white.opacity(0.65))
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .stroke(BespokeColor.cardBorder, lineWidth: 1)
-                )
-            } else if generated.isEmpty {
-                ContentUnavailableView {
-                    Label("No duas yet", systemImage: "text.book.closed")
-                } description: {
-                    Text("Write what is in your heart, then tap Bespoke my dua to generate options you can save or copy.")
-                        .font(BespokeFont.inter(15, weight: .regular))
-                        .foregroundStyle(BespokeColor.muted)
-                        .multilineTextAlignment(.center)
-                }
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(BespokeColor.muted)
-                .padding(.vertical, 28)
-                .padding(.horizontal, 16)
-                .frame(maxWidth: .infinity)
-                .background(Color.white)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(BespokeColor.cardBorder, lineWidth: 1)
-                )
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(generated) { dua in
-                        BespokeDuaCard(
-                            dua: dua,
-                            isSavedVisual: savedDuaIDs.contains(dua.id)
-                        ) {
-                            Task { await toggleSaveDua(dua) }
+            Group {
+                if generated.isEmpty {
+                    DuaCraftingResultsPlaceholder()
+                } else {
+                    LazyVStack(spacing: 14) {
+                        ForEach(generated) { dua in
+                            BespokeDuaCard(
+                                dua: dua,
+                                isSavedVisual: savedDuaIDs.contains(dua.id)
+                            ) {
+                                Task { await handleSaveTap(dua) }
+                            }
                         }
-                    }
 
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            generated = []
-                            savedDuaIDs = []
-                            savedDuaServerIdByLocalId = [:]
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                generated = []
+                                savedDuaIDs = []
+                                savedDuaServerIdByLocalId = [:]
+                            }
+                            if let uid = session.currentUser?.userId {
+                                HomeRecentActivity.clear(userId: uid)
+                            }
+                            homeActivityRefresh += 1
+                        } label: {
+                            Text("Clear results")
+                                .font(BespokeFont.inter(15, weight: .semibold))
+                                .foregroundStyle(BespokeColor.forest)
+                                .frame(maxWidth: .infinity)
+                                .padding(.vertical, 14)
+                                .background(BespokeColor.cream.opacity(0.9))
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(BespokeColor.forest.opacity(0.15), lineWidth: 1)
+                                )
+                                .bespokeButtonHitArea(cornerRadius: 14)
                         }
-                    } label: {
-                        Text("Clear results")
-                            .font(BespokeFont.inter(15, weight: .semibold))
-                            .foregroundStyle(BespokeColor.forest)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(BespokeColor.cream.opacity(0.9))
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .stroke(BespokeColor.forest.opacity(0.15), lineWidth: 1)
-                            )
+                        .buttonStyle(BespokePlainButtonStyle())
+                        .padding(.top, 4)
                     }
-                    .buttonStyle(.plain)
-                    .padding(.top, 4)
                 }
             }
+            .frame(
+                maxWidth: .infinity,
+                minHeight: generated.isEmpty ? CraftingDhikrMetrics.panelHeight : nil,
+                alignment: .top
+            )
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 32)
@@ -902,13 +1096,25 @@ struct ContentView: View {
         }
         emptyRequestWarning = false
         generateError = nil
+        withAnimation(.easeInOut(duration: 0.25)) {
+            generated = []
+            generateInFlight = true
+        }
         Task {
             await runGenerate(trimmed: trimmed)
         }
     }
 
     private func runGenerate(trimmed: String) async {
-        generateInFlight = true
+        if let id = session.currentUser?.userId {
+            HomeRecentActivity.save(
+                userId: id,
+                requestText: trimmed,
+                generated: [],
+                isGenerating: true
+            )
+            homeActivityRefresh += 1
+        }
         defer { generateInFlight = false }
         let uid = session.currentUser?.userId
         do {
@@ -916,67 +1122,194 @@ struct ContentView: View {
             generated = duas
             savedDuaIDs = []
             savedDuaServerIdByLocalId = [:]
+            if let id = session.currentUser?.userId {
+                HomeRecentActivity.save(
+                    userId: id,
+                    requestText: trimmed,
+                    generated: duas,
+                    isGenerating: false
+                )
+                homeActivityRefresh += 1
+            }
             if !subscriptionManager.isSubscribed, let id = session.currentUser?.userId {
                 DailyGenerationQuota.recordGeneration(userId: id)
                 dailyQuotaRefresh += 1
             }
         } catch {
             generateError = "x"
+            if let id = session.currentUser?.userId {
+                HomeRecentActivity.save(
+                    userId: id,
+                    requestText: trimmed,
+                    generated: generated,
+                    isGenerating: false
+                )
+                homeActivityRefresh += 1
+            }
         }
     }
 
-    private func toggleSaveDua(_ dua: DuaReceiver) async {
-        guard let uid = session.currentUser?.userId else {
+    private func clearHomeSessionState() {
+        requestText = ""
+        generated = []
+        savedDuaIDs = []
+        savedDuaServerIdByLocalId = [:]
+        generateInFlight = false
+        generateError = nil
+        emptyRequestWarning = false
+        duaFieldFocused = false
+        showSaveDestinationModal = false
+        duaPendingSave = nil
+        showReflectionModal = false
+        reflectionModalExplanations = []
+    }
+
+    private func sideMenuPresentationBinding(
+        _ keyPath: ReferenceWritableKeyPath<BespokeSideMenuCoordinator, Bool>
+    ) -> Binding<Bool> {
+        Binding(
+            get: { sideMenu[keyPath: keyPath] },
+            set: { sideMenu[keyPath: keyPath] = $0 }
+        )
+    }
+
+    private func resetTabRootIfNeeded(_ tab: MainTab) {
+        switch tab {
+        case .home, .sunnah, .names:
+            break
+        case .duaFeed:
+            duaFeedPath = NavigationPath()
+        case .saved:
+            savedPath = NavigationPath()
+        case .profile:
+            break
+        }
+    }
+
+    private func handleSaveTap(_ dua: DuaReceiver) async {
+        guard session.currentUser?.userId != nil else {
             session.presentAuth()
             return
         }
         if savedDuaIDs.contains(dua.id) {
-            guard let serverId = savedDuaServerIdByLocalId[dua.id] else {
-                savedDuaIDs.remove(dua.id)
-                return
-            }
-            do {
-                try await session.api().deleteSavedDua(id: serverId)
-                savedDuaIDs.remove(dua.id)
-                savedDuaServerIdByLocalId[dua.id] = nil
-                SavedDuaReflectionsCache.remove(userId: uid, duaId: serverId)
-            } catch {
-                generateError = "x"
-            }
+            await unsaveDua(dua)
+            return
+        }
+        session.scheduleDuaCollectionsRefresh()
+        duaPendingSave = dua
+        showSaveDestinationModal = true
+    }
+
+    private func unsaveDua(_ dua: DuaReceiver) async {
+        guard let uid = session.currentUser?.userId else { return }
+        guard let serverId = savedDuaServerIdByLocalId[dua.id] else {
+            savedDuaIDs.remove(dua.id)
             return
         }
         do {
-            let stored = Self.jsonForSavedDuaField(dua)
-            let saved = try await session.api().saveDua(userId: uid, duaText: stored)
-            savedDuaIDs.insert(dua.id)
-            savedDuaServerIdByLocalId[dua.id] = saved.duaId
-            SavedDuaReflectionsCache.store(userId: uid, duaId: saved.duaId, explanations: dua.explanations)
+            if SavedDuaDisplay.kind(for: dua) == .sunnah {
+                try await session.api().deleteSavedSunnahDua(id: serverId)
+            } else {
+                try await session.api().deleteSavedDua(id: serverId)
+            }
+            savedDuaIDs.remove(dua.id)
+            savedDuaServerIdByLocalId[dua.id] = nil
+            session.removeSavedDua(id: serverId)
+            SavedDuaReflectionsCache.remove(userId: uid, duaId: serverId)
         } catch {
             generateError = "x"
         }
     }
 
-    /// Embeds reflections in the `dua` string when the API keeps JSON; `SavedDuaReflectionsCache` also stores them by server id when the API only keeps plain text.
-    private static func jsonForSavedDuaField(_ dua: DuaReceiver) -> String {
-        guard !dua.explanations.isEmpty else { return dua.duaText }
-        struct Payload: Encodable {
-            /// Some backends only persist `duaText` (matches rows in Supabase); keep both so text survives normalization.
-            let dua: String
-            let duaText: String
-            let explanations: [Row]
-            struct Row: Encodable {
-                let name: String
-                let explanation: String
+    private func markDuaAsSaved(_ dua: DuaReceiver, saved: SavedDuaDTO) {
+        guard let uid = session.currentUser?.userId else { return }
+        savedDuaIDs.insert(dua.id)
+        savedDuaServerIdByLocalId[dua.id] = saved.duaId
+        session.insertSavedDua(saved)
+        SavedDuaReflectionsCache.store(userId: uid, duaId: saved.duaId, explanations: dua.explanations)
+    }
+
+    private func dismissSaveDestinationModal() {
+        showSaveDestinationModal = false
+        duaPendingSave = nil
+    }
+
+    private func existingSavedRow(for dua: DuaReceiver) -> SavedDuaDTO? {
+        if let serverId = savedDuaServerIdByLocalId[dua.id] {
+            return session.savedDuas.first { $0.duaId == serverId }
+        }
+        return SavedDuaDisplay.existingRow(matching: dua, in: session.savedDuas)
+    }
+
+    private func saveDua(_ dua: DuaReceiver, toCollectionIds collectionIds: Set<String>) async -> String? {
+        guard let uid = session.currentUser?.userId else {
+            return "Something went wrong. Try again."
+        }
+
+        let saved: SavedDuaDTO
+        do {
+            if let existing = existingSavedRow(for: dua) {
+                saved = existing
+            } else if SavedDuaDisplay.kind(for: dua) == .sunnah, let payload = dua.storageJSON {
+                let sunnahSaved = try await session.api().saveSunnahDua(userId: uid, sunnahDua: payload)
+                saved = sunnahSaved.asSavedDuaDTO()
+            } else {
+                let stored = dua.storageJSON ?? SavedDuaDisplay.encodeForStorage(
+                    duaText: dua.duaText,
+                    explanations: dua.explanations
+                )
+                saved = try await session.api().saveDua(userId: uid, duaText: stored)
+            }
+        } catch {
+            return Self.friendlySaveErrorMessage(for: error)
+        }
+
+        var collectionFailures = 0
+        for collectionId in collectionIds {
+            do {
+                let detail = try await session.api().duaCollection(id: collectionId)
+                var duaIds = detail.savedDuaIds
+                if !duaIds.contains(saved.duaId) {
+                    duaIds.append(saved.duaId)
+                }
+                let updated = try await session.api().updateDuaCollection(
+                    id: collectionId,
+                    body: UpdateDuaCollectionRequest(
+                        name: detail.name,
+                        description: detail.description,
+                        duaIds: duaIds
+                    )
+                )
+                session.upsertDuaCollection(from: updated)
+            } catch {
+                collectionFailures += 1
             }
         }
-        let rows = dua.explanations.map { Payload.Row(name: $0.name, explanation: $0.explanation) }
-        let text = dua.duaText
-        let payload = Payload(dua: text, duaText: text, explanations: rows)
-        guard let data = try? JSONEncoder().encode(payload),
-              let str = String(data: data, encoding: .utf8) else {
-            return dua.duaText
+
+        markDuaAsSaved(dua, saved: saved)
+
+        if collectionFailures > 0 {
+            return collectionIds.count == 1
+                ? "Saved to your library, but couldn't add it to the collection. Try again."
+                : "Saved to your library, but couldn't add it to some collections. Try again."
         }
-        return str
+
+        dismissSaveDestinationModal()
+        return nil
+    }
+
+    private static func friendlySaveErrorMessage(for error: Error) -> String {
+        if let localized = error as? LocalizedError,
+           let description = localized.errorDescription,
+           !description.isEmpty {
+            return description
+        }
+        return "Something went wrong. Try again."
+    }
+
+    /// Embeds reflections in the `dua` string when the API keeps JSON; `SavedDuaReflectionsCache` also stores them by server id when the API only keeps plain text.
+    private static func jsonForSavedDuaField(_ dua: DuaReceiver) -> String {
+        SavedDuaDisplay.encodeForStorage(duaText: dua.duaText, explanations: dua.explanations)
     }
 }
 
@@ -1010,16 +1343,20 @@ private struct BespokeLoaderDots: View {
     }
 }
 
-// MARK: - Dua card (`dua-result-card.scss`)
-
-private struct BespokeDuaCard: View {
+struct BespokeDuaCard: View {
     @Environment(\.presentReflectionModal) private var presentReflectionModal
 
     let dua: DuaReceiver
     var isSavedVisual: Bool
     var onSave: () -> Void
+    var showsActions: Bool = true
+    var reservesActionBarSpace: Bool = false
+    var showsEditMenu: Bool = false
+    var onEdit: (() -> Void)? = nil
 
     @State private var copied = false
+
+    private static let actionBarHeight: CGFloat = 30
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1028,7 +1365,26 @@ private struct BespokeDuaCard: View {
                 .foregroundStyle(BespokeColor.bodyText)
                 .fixedSize(horizontal: false, vertical: true)
 
+            if showsActions {
             HStack(spacing: 8) {
+                if showsEditMenu, let onEdit {
+                    Button(action: onEdit) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 15))
+                            Text("Edit dua")
+                                .font(BespokeFont.inter(13, weight: .regular))
+                        }
+                        .foregroundStyle(BespokeColor.clearBtnText)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color(red: 242 / 255, green: 242 / 255, blue: 242 / 255))
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .bespokeButtonHitArea(cornerRadius: 8)
+                    }
+                    .buttonStyle(BespokePlainButtonStyle())
+                }
+
                 Spacer(minLength: 0)
                 Button {
                     presentReflectionModal?(dua.explanations)
@@ -1039,8 +1395,9 @@ private struct BespokeDuaCard: View {
                         .padding(6)
                         .background(BespokeColor.cardBorder.opacity(0.35))
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .bespokeButtonHitArea(cornerRadius: 8)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BespokePlainButtonStyle())
 
                 Button(action: onSave) {
                     Image(systemName: isSavedVisual ? "bookmark.fill" : "bookmark")
@@ -1049,8 +1406,9 @@ private struct BespokeDuaCard: View {
                         .padding(6)
                         .background(BespokeColor.cardBorder.opacity(0.35))
                         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .bespokeButtonHitArea(cornerRadius: 8)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BespokePlainButtonStyle())
 
                 Button {
                     copyToClipboard(dua.duaText)
@@ -1070,10 +1428,16 @@ private struct BespokeDuaCard: View {
                     .padding(.vertical, 6)
                     .background(Color(red: 242 / 255, green: 242 / 255, blue: 242 / 255))
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .bespokeButtonHitArea(cornerRadius: 8)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BespokePlainButtonStyle())
+            }
+            } else if reservesActionBarSpace {
+                Color.clear
+                    .frame(height: Self.actionBarHeight)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(18)
         .background(Color.white)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -1096,9 +1460,15 @@ private struct BespokeDuaCard: View {
 
 // MARK: - Bespoke card modal (upgrade, aim, reflection)
 
-private struct BespokeCardModalView<Content: View>: View {
+enum BespokeModalTheme {
+    case standard
+    case plus
+}
+
+struct BespokeCardModalView<Content: View>: View {
     @Binding var isPresented: Bool
     let title: String
+    var theme: BespokeModalTheme = .standard
     @ViewBuilder var content: () -> Content
 
     var body: some View {
@@ -1119,18 +1489,18 @@ private struct BespokeCardModalView<Content: View>: View {
                         Image(systemName: "xmark.circle.fill")
                             .font(.title2)
                             .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(BespokeColor.muted)
+                            .foregroundStyle(theme == .plus ? BespokeColor.homeGold : BespokeColor.muted)
+                            .padding(4)
+                            .contentShape(Rectangle())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(BespokePlainButtonStyle())
                     .accessibilityLabel("Close")
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 12)
 
                 VStack(alignment: .leading, spacing: 18) {
-                    Text(title)
-                        .font(BespokeFont.inter(29.6, weight: .semibold))
-                        .foregroundStyle(BespokeColor.forest)
+                    modalTitle
                     content()
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1139,77 +1509,391 @@ private struct BespokeCardModalView<Content: View>: View {
             }
             .frame(maxWidth: 540)
             .fixedSize(horizontal: false, vertical: true)
-            .background(BespokeColor.authCard)
+            .background(modalBackground)
             .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .overlay(
                 RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .stroke(BespokeColor.forest.opacity(0.18), lineWidth: 1)
+                    .stroke(modalBorderColor, lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.18), radius: 35, x: 0, y: 25)
             .padding(16)
         }
     }
+
+    @ViewBuilder
+    private var modalTitle: some View {
+        switch theme {
+        case .standard:
+            Text(title)
+                .font(BespokeFont.inter(29.6, weight: .semibold))
+                .foregroundStyle(BespokeColor.forest)
+        case .plus:
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 6) {
+                    Image(systemName: "diamond.fill")
+                        .font(.system(size: 9, weight: .bold))
+                    Text("Premium")
+                        .font(BespokeFont.inter(11.5, weight: .semibold))
+                        .textCase(.uppercase)
+                        .tracking(0.45)
+                }
+                .foregroundStyle(BespokeColor.goldDeep)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(BespokeColor.homeGold.opacity(0.16))
+                .clipShape(Capsule())
+                .overlay {
+                    Capsule()
+                        .stroke(BespokeColor.homeGold.opacity(0.22), lineWidth: 1)
+                }
+
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(BespokeColor.homeGold)
+                    Text(title)
+                        .font(BespokeFont.display(30))
+                        .foregroundStyle(BespokeColor.forest)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var modalBackground: some View {
+        if theme == .plus {
+            ZStack {
+                BespokeColor.authCard
+                LinearGradient(
+                    colors: [
+                        BespokeColor.homeGold.opacity(0.12),
+                        Color.clear,
+                    ],
+                    startPoint: .top,
+                    endPoint: UnitPoint(x: 0.5, y: 0.38)
+                )
+            }
+        } else {
+            BespokeColor.authCard
+        }
+    }
+
+    private var modalBorderColor: Color {
+        switch theme {
+        case .standard:
+            BespokeColor.forest.opacity(0.18)
+        case .plus:
+            BespokeColor.homeGold.opacity(0.28)
+        }
+    }
 }
 
-// MARK: - Delete account confirmation
+// MARK: - Save destination picker
 
-private struct DeleteAccountConfirmationView: View {
+private struct SaveDuaDestinationModalView: View {
+    @Environment(AppSession.self) private var session
+
     @Binding var isPresented: Bool
-    @Binding var errorMessage: String?
-    var inFlight: Bool
-    let onDelete: () -> Void
+    let dua: DuaReceiver
+    let canUseCollections: Bool
+    let onSave: (DuaReceiver, Set<String>) async -> String?
+    let onAddCollections: () -> Void
+
+    @State private var selectedCollectionIds: Set<String> = []
+    @State private var saveInFlight = false
+    @State private var saveError: String?
+
+    private var userId: Int? { session.currentUser?.userId }
+
+    private var duaKind: SavedDuaKind {
+        SavedDuaDisplay.kind(for: dua)
+    }
+
+    private var availableCollections: [DuaCollectionSummaryDTO] {
+        session.duaCollections.sorted { lhs, rhs in
+            let lhsMatchesKind = DuaCollectionDisplay.kind(for: lhs, userId: userId) == duaKind
+            let rhsMatchesKind = DuaCollectionDisplay.kind(for: rhs, userId: userId) == duaKind
+            if lhsMatchesKind != rhsMatchesKind { return lhsMatchesKind }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+        }
+    }
 
     var body: some View {
-        BespokeCardModalView(isPresented: $isPresented, title: "Delete account?") {
-            Text("Permanently delete your account and all data")
-                .font(BespokeFont.inter(16, weight: .regular))
-                .foregroundStyle(BespokeColor.bodyText)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if let errorMessage, !errorMessage.isEmpty {
-                Text(errorMessage)
-                    .font(BespokeFont.inter(14, weight: .regular))
-                    .foregroundStyle(BespokeColor.error)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 12) {
-                Button {
-                    errorMessage = nil
-                    isPresented = false
-                } label: {
-                    Text("Cancel")
-                        .font(BespokeFont.inter(16, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                }
-                .buttonStyle(.bordered)
-                .tint(BespokeColor.forest)
-                .disabled(inFlight)
-
-                Button {
-                    onDelete()
-                } label: {
-                    Text("Delete")
-                        .font(BespokeFont.inter(16, weight: .semibold))
-                        .foregroundStyle(BespokeColor.cream)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(BespokeColor.error)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(inFlight)
-                .opacity(inFlight ? 0.65 : 1)
-            }
-            .padding(.top, 4)
+        BespokeCardModalView(isPresented: saveModalBinding, title: "Where to save?") {
+            saveDestinationModalBody
         }
+        .onAppear {
+            if canUseCollections {
+                session.scheduleDuaCollectionsRefresh()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var saveDestinationModalBody: some View {
+        Text(helperText)
+            .font(BespokeFont.inter(15, weight: .regular))
+            .foregroundStyle(BespokeColor.muted)
+            .fixedSize(horizontal: false, vertical: true)
+
+        if let saveError, !saveError.isEmpty {
+            Text(saveError)
+                .font(BespokeFont.inter(14, weight: .regular))
+                .foregroundStyle(BespokeColor.error)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+
+        VStack(spacing: 10) {
+            SaveDuaDestinationRow(
+                symbolName: "bookmark.fill",
+                title: "General",
+                subtitle: generalSubtitle,
+                isSelected: true,
+                isLocked: true
+            )
+
+            if canUseCollections {
+                collectionsSection
+            } else {
+                nonSubscriberCollectionsSection
+            }
+        }
+
+        saveDestinationButton
+    }
+
+    private var saveDestinationButton: some View {
+        Button {
+            Task { await saveSelection() }
+        } label: {
+            Group {
+                if saveInFlight {
+                    ProgressView()
+                        .tint(.white)
+                } else {
+                    Text("Save")
+                        .font(BespokeFont.inter(17, weight: .semibold))
+                }
+            }
+            .foregroundStyle(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .background {
+                if !saveInFlight {
+                    LinearGradient.bespokeGold
+                } else {
+                    BespokeColor.muted.opacity(0.35)
+                }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(BespokePlainButtonStyle())
+        .disabled(saveInFlight)
+        .padding(.top, 6)
+    }
+
+    private var helperText: String {
+        if canUseCollections {
+            "Every dua is saved to General. Optionally add it to collections too."
+        } else {
+            "Your dua will be saved to your main library."
+        }
+    }
+
+    @ViewBuilder
+    private var collectionsSection: some View {
+        if session.duaCollectionsLoading && session.duaCollections.isEmpty {
+            HStack(spacing: 10) {
+                ProgressView()
+                    .tint(BespokeColor.forest)
+                Text("Loading collections…")
+                    .font(BespokeFont.inter(14, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 8)
+        } else if !availableCollections.isEmpty {
+            Text("Collections")
+                .font(BespokeFont.inter(12, weight: .semibold))
+                .foregroundStyle(BespokeColor.muted)
+                .textCase(.uppercase)
+                .tracking(0.9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+
+            ScrollView {
+                VStack(spacing: SavedDuaCollectionPickerLayout.rowSpacing) {
+                    ForEach(availableCollections) { collection in
+                        SaveDuaDestinationRow(
+                            symbolName: CollectionIconCache.symbol(
+                                userId: userId,
+                                collectionId: collection.collectionId
+                            ),
+                            title: collection.name,
+                            subtitle: collectionCountSubtitle(collection.duaCount),
+                            isSelected: selectedCollectionIds.contains(collection.collectionId)
+                        ) {
+                            toggleCollection(collection.collectionId)
+                        }
+                    }
+                }
+            }
+            .frame(maxHeight: SavedDuaCollectionPickerLayout.collectionsScrollHeight)
+        }
+    }
+
+    private var nonSubscriberCollectionsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Collections")
+                .font(BespokeFont.inter(12, weight: .semibold))
+                .foregroundStyle(BespokeColor.muted)
+                .textCase(.uppercase)
+                .tracking(0.9)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.top, 4)
+
+            Button(action: onAddCollections) {
+                HStack(spacing: 10) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text("Add collections")
+                        .font(BespokeFont.inter(16, weight: .semibold))
+                }
+                .foregroundStyle(BespokeColor.forest)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(BespokeColor.cardBorder, lineWidth: 1)
+                )
+                .bespokeButtonHitArea(cornerRadius: 14)
+            }
+            .buttonStyle(BespokePlainButtonStyle())
+        }
+    }
+
+    private var saveModalBinding: Binding<Bool> {
+        Binding(
+            get: { isPresented },
+            set: { newValue in
+                guard !saveInFlight else { return }
+                isPresented = newValue
+            }
+        )
+    }
+
+    private var generalSubtitle: String {
+        let count = session.savedDuas.count
+        switch count {
+        case 0: return "Your main library"
+        case 1: return "1 saved dua"
+        default: return "\(count) saved duas"
+        }
+    }
+
+    private func collectionCountSubtitle(_ count: Int) -> String {
+        switch count {
+        case 0: return "No duas yet"
+        case 1: return "1 dua"
+        default: return "\(count) duas"
+        }
+    }
+
+    private func toggleCollection(_ id: String) {
+        if selectedCollectionIds.contains(id) {
+            selectedCollectionIds.remove(id)
+        } else {
+            selectedCollectionIds.insert(id)
+        }
+    }
+
+    @MainActor
+    private func saveSelection() async {
+        guard !saveInFlight else { return }
+        saveInFlight = true
+        saveError = nil
+
+        let collectionIds = canUseCollections ? selectedCollectionIds : []
+        let errorMessage = await onSave(dua, collectionIds)
+        saveInFlight = false
+
+        if let errorMessage {
+            saveError = errorMessage
+        }
+    }
+}
+
+private struct SaveDuaDestinationRow: View {
+    let symbolName: String
+    let title: String
+    let subtitle: String
+    var isSelected: Bool
+    var isLocked: Bool = false
+    var action: (() -> Void)?
+
+    var body: some View {
+        Group {
+            if isLocked {
+                rowContent
+            } else {
+                Button {
+                    action?()
+                } label: {
+                    rowContent
+                }
+                .buttonStyle(BespokePlainButtonStyle())
+            }
+        }
+    }
+
+    private var rowContent: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .fill(BespokeColor.forest.opacity(isSelected ? 0.16 : 0.10))
+                    .frame(width: 40, height: 40)
+                Image(systemName: symbolName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(BespokeColor.forest)
+            }
+            .fixedSize()
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(BespokeFont.inter(15, weight: .semibold))
+                    .foregroundStyle(BespokeColor.forest)
+                    .lineLimit(1)
+                Text(subtitle)
+                    .font(BespokeFont.inter(13, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 22, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(isSelected ? BespokeColor.forest : BespokeColor.muted.opacity(0.45))
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(isSelected ? BespokeColor.forest.opacity(0.06) : Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(isSelected ? BespokeColor.forest.opacity(0.28) : BespokeColor.cardBorder, lineWidth: 1)
+        )
+        .bespokeButtonHitArea(cornerRadius: 14)
+        .animation(nil, value: isSelected)
     }
 }
 
 // MARK: - Upgrade info (full-screen modal)
 
-private struct UpgradeInfoModalView: View {
+struct UpgradeInfoModalView: View {
     @Environment(AppSession.self) private var session
     @Environment(SubscriptionManager.self) private var subscriptionManager
     @Environment(\.openURL) private var openURL
@@ -1231,102 +1915,197 @@ private struct UpgradeInfoModalView: View {
     }()
 
     var body: some View {
-        BespokeCardModalView(isPresented: $isPresented, title: "Bespoke Plus") {
+        BespokeCardModalView(isPresented: $isPresented, title: "Bespoke Plus", theme: .plus) {
             if subscriptionManager.isSubscribed {
-                Text("You’re subscribed. Enjoy unlimited bespoke duas.")
+                subscribedContent
+            } else {
+                upgradeContent
+            }
+
+            legalLinks
+        }
+        .task {
+            subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
+            await subscriptionManager.loadProduct()
+            await subscriptionManager.refreshEntitlements()
+        }
+    }
+
+    private var subscribedContent: some View {
+        Group {
+            Text("You’re subscribed. Enjoy unlimited bespoke duas.")
+                .font(BespokeFont.inter(16, weight: .regular))
+                .foregroundStyle(BespokeColor.bodyText)
+                .fixedSize(horizontal: false, vertical: true)
+
+            plusFeaturesPanel {
+                EmptyView()
+            }
+
+            if let renewalDate = subscriptionManager.appleSubscriptionRenewalDate {
+                Text("Renews on \(Self.renewalDateFormatter.string(from: renewalDate)).")
+                    .font(BespokeFont.inter(15, weight: .semibold))
+                    .foregroundStyle(BespokeColor.goldDeep)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text("Renewal details are available in your Apple subscription settings.")
+                    .font(BespokeFont.inter(14, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 10) {
+                Button {
+                    openURL(Self.manageSubscriptionsURL)
+                } label: {
+                    Text("Manage in App Store")
+                        .font(BespokeFont.inter(16, weight: .semibold))
+                        .foregroundStyle(BespokeColor.goldDeep)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                }
+                .buttonStyle(.bordered)
+                .tint(BespokeColor.homeGold)
+
+                Button {
+                    openURL(Self.manageSubscriptionsURL)
+                } label: {
+                    Text("Cancel subscription")
+                        .font(BespokeFont.inter(16, weight: .semibold))
+                        .foregroundStyle(BespokeColor.cream)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(BespokeColor.error)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .bespokeButtonHitArea(cornerRadius: 16)
+                }
+                .buttonStyle(BespokePlainButtonStyle())
+            }
+            .padding(.top, 4)
+        }
+    }
+
+    private var upgradeContent: some View {
+        Group {
+            if emphasizeDailyLimit {
+                Text("You’ve used all \(DailyGenerationQuota.freeDailyLimit) free duas for today. Subscribe to continue.")
                     .font(BespokeFont.inter(16, weight: .regular))
                     .foregroundStyle(BespokeColor.bodyText)
                     .fixedSize(horizontal: false, vertical: true)
-
-                if let renewalDate = subscriptionManager.appleSubscriptionRenewalDate {
-                    Text("Renews on \(Self.renewalDateFormatter.string(from: renewalDate)).")
-                        .font(BespokeFont.inter(15, weight: .semibold))
-                        .foregroundStyle(BespokeColor.forest)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text("Renewal details are available in your Apple subscription settings.")
-                        .font(BespokeFont.inter(14, weight: .regular))
-                        .foregroundStyle(BespokeColor.muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                VStack(spacing: 10) {
-                    Button {
-                        openURL(Self.manageSubscriptionsURL)
-                    } label: {
-                        Text("Manage in App Store")
-                            .font(BespokeFont.inter(16, weight: .semibold))
-                            .foregroundStyle(BespokeColor.forest)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                    }
-                    .buttonStyle(.bordered)
-                    .tint(BespokeColor.forest)
-
-                    Button {
-                        openURL(Self.manageSubscriptionsURL)
-                    } label: {
-                        Text("Cancel subscription")
-                            .font(BespokeFont.inter(16, weight: .semibold))
-                            .foregroundStyle(BespokeColor.cream)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(BespokeColor.error)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.top, 4)
             } else {
-                if emphasizeDailyLimit {
-                    Text("You’ve used all \(DailyGenerationQuota.freeDailyLimit) free bespoke duas for today. Subscribe to continue.")
-                        .font(BespokeFont.inter(16, weight: .regular))
-                        .foregroundStyle(BespokeColor.bodyText)
-                        .fixedSize(horizontal: false, vertical: true)
-                } else {
-                    Text("Subscribe for unlimited bespoke duas. Free accounts can create up to \(DailyGenerationQuota.freeDailyLimit) duas per day.")
-                        .font(BespokeFont.inter(16, weight: .regular))
-                        .foregroundStyle(BespokeColor.bodyText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+                Text("Subscribe for unlimited duas. Free accounts can create up to \(DailyGenerationQuota.freeDailyLimit) duas per day.")
+                    .font(BespokeFont.inter(16, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
+            plusFeaturesPanel {
                 Group {
                     if subscriptionManager.loadInFlight && subscriptionManager.product == nil {
                         HStack(spacing: 10) {
                             ProgressView()
-                                .tint(BespokeColor.forest)
+                                .tint(BespokeColor.homeGold)
                             Text("Loading subscription…")
                                 .font(BespokeFont.inter(15, weight: .medium))
                                 .foregroundStyle(BespokeColor.muted)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.vertical, 4)
                     } else if let priceLine = subscriptionManager.plusMonthlyDisplayPrice {
                         Text(priceLine)
-                            .font(BespokeFont.inter(18, weight: .semibold))
-                            .foregroundStyle(BespokeColor.forest)
+                            .font(BespokeFont.inter(20, weight: .semibold))
+                            .foregroundStyle(LinearGradient.bespokeGold)
                     }
                 }
+            }
 
-                if let err = subscriptionManager.lastErrorMessage, !err.isEmpty {
-                    Text(err)
-                        .font(BespokeFont.inter(14, weight: .medium))
-                        .foregroundStyle(BespokeColor.error)
-                        .fixedSize(horizontal: false, vertical: true)
+            if let err = subscriptionManager.lastErrorMessage, !err.isEmpty {
+                Text(err)
+                    .font(BespokeFont.inter(14, weight: .medium))
+                    .foregroundStyle(BespokeColor.error)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(spacing: 10) {
+                Button {
+                    Task {
+                        await subscriptionManager.purchase()
+                        guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
+                        do {
+                            try await session.syncSubscribedPlan(
+                                originalTransactionId: subscriptionManager.appleOriginalTransactionID
+                            )
+                        } catch {
+                            subscriptionManager.setSyncErrorMessage(
+                                (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                            )
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 15, weight: .semibold))
+                        Text("Subscribe")
+                            .font(BespokeFont.inter(17, weight: .semibold))
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(LinearGradient.bespokeGold)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .bespokeButtonHitArea(cornerRadius: 16)
+                    .shadow(color: BespokeColor.goldDeep.opacity(0.28), radius: 10, x: 0, y: 5)
                 }
+                .buttonStyle(BespokePlainButtonStyle())
+                .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
+                .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
 
-                VStack(spacing: 10) {
-                    // Always offer Subscribe when this account is not Plus. Device-level Apple
-                    // entitlements can remain from sandbox or another App Store account; gating
-                    // Subscribe on `hasActiveAppleSubscription` hid the button in those cases.
+                Button {
+                    Task {
+                        await subscriptionManager.restorePurchases()
+                        guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
+                        do {
+                            try await session.syncSubscribedPlan(
+                                originalTransactionId: subscriptionManager.appleOriginalTransactionID
+                            )
+                            showTransferConfirmation = false
+                        } catch {
+                            let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                            if message.localizedCaseInsensitiveContains("confirm transfer") {
+                                showTransferConfirmation = true
+                                subscriptionManager.setSyncErrorMessage(
+                                    "This Apple subscription is linked to another account. Confirm transfer to move it here."
+                                )
+                            } else {
+                                subscriptionManager.setSyncErrorMessage(message)
+                            }
+                        }
+                    }
+                } label: {
+                    Text("Restore purchases")
+                        .font(BespokeFont.inter(15, weight: .semibold))
+                        .foregroundStyle(BespokeColor.goldDeep)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.white.opacity(0.55))
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(BespokeColor.homeGold.opacity(0.35), lineWidth: 1)
+                        }
+                }
+                .buttonStyle(BespokePlainButtonStyle())
+                .disabled(subscriptionManager.purchaseInFlight)
+
+                if showTransferConfirmation {
                     Button {
                         Task {
-                            await subscriptionManager.purchase()
-                            guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
+                            guard session.isLoggedIn else { return }
                             do {
                                 try await session.syncSubscribedPlan(
-                                    originalTransactionId: subscriptionManager.appleOriginalTransactionID
+                                    originalTransactionId: subscriptionManager.appleOriginalTransactionID,
+                                    confirmTransfer: true
                                 )
+                                showTransferConfirmation = false
                             } catch {
                                 subscriptionManager.setSyncErrorMessage(
                                     (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -1334,108 +2113,63 @@ private struct UpgradeInfoModalView: View {
                             }
                         }
                     } label: {
-                        Text("Subscribe")
-                            .font(BespokeFont.inter(17, weight: .semibold))
+                        Text("Confirm transfer to this account")
+                            .font(BespokeFont.inter(15, weight: .semibold))
                             .foregroundStyle(BespokeColor.cream)
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 16)
-                            .background(BespokeColor.forest)
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil)
-                    .opacity(subscriptionManager.purchaseInFlight || subscriptionManager.product == nil ? 0.55 : 1)
-
-                    Button {
-                        Task {
-                            await subscriptionManager.restorePurchases()
-                            guard subscriptionManager.hasActiveAppleSubscription, session.isLoggedIn else { return }
-                            do {
-                                try await session.syncSubscribedPlan(
-                                    originalTransactionId: subscriptionManager.appleOriginalTransactionID
-                                )
-                                showTransferConfirmation = false
-                            } catch {
-                                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                                if message.localizedCaseInsensitiveContains("confirm transfer") {
-                                    showTransferConfirmation = true
-                                    subscriptionManager.setSyncErrorMessage(
-                                        "This Apple subscription is linked to another account. Confirm transfer to move it here."
-                                    )
-                                } else {
-                                    subscriptionManager.setSyncErrorMessage(message)
-                                }
-                            }
-                        }
-                    } label: {
-                        Text("Restore purchases")
-                            .font(BespokeFont.inter(15, weight: .semibold))
-                            .foregroundStyle(BespokeColor.forest)
-                            .frame(maxWidth: .infinity)
                             .padding(.vertical, 12)
+                            .background(BespokeColor.error)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .bespokeButtonHitArea(cornerRadius: 16)
                     }
-                    .buttonStyle(.bordered)
-                    .tint(BespokeColor.forest)
+                    .buttonStyle(BespokePlainButtonStyle())
                     .disabled(subscriptionManager.purchaseInFlight)
-
-                    if showTransferConfirmation {
-                        Button {
-                            Task {
-                                guard session.isLoggedIn else { return }
-                                do {
-                                    try await session.syncSubscribedPlan(
-                                        originalTransactionId: subscriptionManager.appleOriginalTransactionID,
-                                        confirmTransfer: true
-                                    )
-                                    showTransferConfirmation = false
-                                } catch {
-                                    subscriptionManager.setSyncErrorMessage(
-                                        (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                                    )
-                                }
-                            }
-                        } label: {
-                            Text("Confirm transfer to this account")
-                                .font(BespokeFont.inter(15, weight: .semibold))
-                                .foregroundStyle(BespokeColor.cream)
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 12)
-                                .background(BespokeColor.error)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(subscriptionManager.purchaseInFlight)
-                        .opacity(subscriptionManager.purchaseInFlight ? 0.55 : 1)
-                    }
-                }
-                .padding(.top, 4)
-
-                Text("Payment will be charged to your Apple ID. Subscription renews monthly until cancelled in Settings.")
-                    .font(BespokeFont.inter(12, weight: .regular))
-                    .foregroundStyle(BespokeColor.muted)
-                    .fixedSize(horizontal: false, vertical: true)
-
-            }
-
-            VStack {
-                HStack(spacing: 18) {
-                    Link("Privacy Policy", destination: Self.privacyPolicyURL)
-                        .font(BespokeFont.inter(15, weight: .semibold))
-                        .foregroundStyle(BespokeColor.forest)
-
-                    Link("Terms of Use (EULA)", destination: Self.appleStandardEULAURL)
-                        .font(BespokeFont.inter(15, weight: .semibold))
-                        .foregroundStyle(BespokeColor.forest)
+                    .opacity(subscriptionManager.purchaseInFlight ? 0.55 : 1)
                 }
             }
-            .frame(maxWidth: .infinity)
             .padding(.top, 4)
+
+            Text("Payment will be charged to your Apple ID. Subscription renews monthly until cancelled in Settings.")
+                .font(BespokeFont.inter(12, weight: .regular))
+                .foregroundStyle(BespokeColor.muted)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .task {
-            subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
-            await subscriptionManager.loadProduct()
-            await subscriptionManager.refreshEntitlements()
+    }
+
+    private func plusFeaturesPanel<Trailing: View>(
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Features")
+                .font(BespokeFont.inter(16, weight: .semibold))
+                .foregroundStyle(BespokeColor.forest)
+
+            BespokePlusFeaturesList()
+
+            trailing()
         }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(BespokeColor.cardBorder, lineWidth: 1)
+        }
+    }
+
+    private var legalLinks: some View {
+        HStack(spacing: 18) {
+            Link("Privacy Policy", destination: Self.privacyPolicyURL)
+                .font(BespokeFont.inter(15, weight: .semibold))
+                .foregroundStyle(BespokeColor.goldDeep)
+
+            Link("Terms of Use (EULA)", destination: Self.appleStandardEULAURL)
+                .font(BespokeFont.inter(15, weight: .semibold))
+                .foregroundStyle(BespokeColor.goldDeep)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 4)
     }
 }
 
@@ -1479,6 +2213,12 @@ private struct AuthSecureUITextField: UIViewRepresentable {
     func updateUIView(_ uiView: UITextField, context: Context) {
         context.coordinator.text = $text
         // Do not touch `textContentType` / `passwordRules` here — reapplying can reset secure fields on iOS 18+.
+
+        // Allow programmatic clears (e.g. after failed login) even while the field is focused.
+        if text.isEmpty, !(uiView.text ?? "").isEmpty {
+            uiView.text = ""
+            return
+        }
 
         if context.coordinator.isUserEditing || uiView.isFirstResponder {
             return
@@ -1624,7 +2364,7 @@ private struct AuthModalView: View {
                             }
                             .foregroundStyle(BespokeColor.forest)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(BespokePlainButtonStyle())
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 20)
@@ -1672,7 +2412,7 @@ private struct AuthModalView: View {
                                             .autocorrectionDisabled()
                                     }
                                 )
-                                Text("2–100 characters. Letters, numbers, underscores, or hyphens.")
+                                Text(UsernameRules.hint)
                                     .font(BespokeFont.inter(12.8, weight: .regular))
                                     .foregroundStyle(BespokeColor.fieldLabel.opacity(0.65))
                             }
@@ -1703,7 +2443,7 @@ private struct AuthModalView: View {
                                             .foregroundStyle(BespokeColor.bodyText)
                                     }
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(BespokePlainButtonStyle())
 
                                 HStack(spacing: 4) {
                                     Link("Terms and Conditions", destination: Self.termsOfUseURL)
@@ -1739,7 +2479,7 @@ private struct AuthModalView: View {
                                         .underline(true, color: Color(red: 29 / 255, green: 100 / 255, blue: 58 / 255))
                                         .frame(maxWidth: .infinity)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(BespokePlainButtonStyle())
                                 .padding(.top, 4)
                             }
                         } else if mode == .register, registerStep == .form {
@@ -1773,7 +2513,7 @@ private struct AuthModalView: View {
                                 .background(BespokeColor.forest)
                                 .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(BespokePlainButtonStyle())
                     }
                     .padding(16)
                     .frame(maxWidth: .infinity)
@@ -1940,7 +2680,7 @@ private struct AuthModalView: View {
                     .background(BespokeColor.forest)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(BespokePlainButtonStyle())
                 .disabled(session.authInFlight)
 
                 Button {
@@ -2216,8 +2956,9 @@ private struct AuthModalView: View {
                 .padding(.vertical, 17)
                 .background(BespokeColor.forest)
                 .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .bespokeButtonHitArea(cornerRadius: 16)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BespokePlainButtonStyle())
         .disabled(disabled)
         .opacity(disabled ? 0.65 : 1)
     }
@@ -2233,8 +2974,9 @@ private struct AuthModalView: View {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .stroke(BespokeColor.forest.opacity(0.22), lineWidth: 1)
                 )
+                .bespokeButtonHitArea(cornerRadius: 16)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BespokePlainButtonStyle())
         .disabled(disabled)
         .opacity(disabled ? 0.65 : 1)
         .padding(.top, 4)
@@ -2350,8 +3092,9 @@ private struct AuthModalView: View {
                 .padding(.vertical, 15)
                 .background(mode == tab ? BespokeColor.gold : Color.clear)
                 .clipShape(Capsule())
+                .bespokeButtonHitArea(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BespokePlainButtonStyle())
     }
 
     private func authField<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
@@ -2388,6 +3131,9 @@ private struct AuthModalView: View {
         switch mode {
         case .login:
             await session.login(email: e, password: p)
+            if session.authError != nil {
+                password = ""
+            }
         case .register:
             let result = await session.register(
                 username: username.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -2408,299 +3154,402 @@ private struct AuthModalView: View {
     }
 }
 
-// MARK: - Saved dua reflections cache
 
-/// The API may only persist plain `dua` text; we keep reflections locally by server `duaId` so the Saved tab can still show them.
-private enum SavedDuaReflectionsCache {
-    private static func storageKey(userId: Int, duaId: String) -> String {
-        "bespoke.savedDua.reflections.\(userId).\(duaId)"
-    }
+private struct HomeRecentSearchRow: View {
+    let symbolName: String
+    let iconBackground: Color
+    let iconForeground: Color
+    let title: String
+    let queryText: String
+    let statusText: String
+    let showDivider: Bool
+    let action: () -> Void
 
-    static func store(userId: Int, duaId: String, explanations: [ExplanationModel]) {
-        if explanations.isEmpty {
-            remove(userId: userId, duaId: duaId)
-            return
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(alignment: .center, spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(iconBackground)
+                        .frame(width: 32, height: 32)
+
+                    Image(systemName: symbolName)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(iconForeground)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(BespokeFont.inter(14, weight: .semibold))
+                        .foregroundStyle(BespokeColor.forest)
+
+                    Text("“\(queryText)”")
+                        .font(BespokeFont.inter(13, weight: .regular))
+                        .foregroundStyle(BespokeColor.muted)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
+                    Text(statusText)
+                        .font(BespokeFont.inter(11, weight: .regular))
+                        .foregroundStyle(BespokeColor.subtle)
+                }
+
+                Spacer(minLength: 8)
+
+                Button(action: action) {
+                    Text("View")
+                        .font(BespokeFont.inter(12, weight: .semibold))
+                        .foregroundStyle(BespokeColor.homeGold)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(BespokeColor.homeGold.opacity(0.1))
+                        .clipShape(Capsule())
+                        .bespokeButtonHitArea(cornerRadius: 16)
+                }
+                .buttonStyle(BespokePlainButtonStyle())
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 11)
+
+            if showDivider {
+                Rectangle()
+                    .fill(BespokeColor.sectionRule.opacity(0.85))
+                    .frame(height: 1)
+                    .padding(.leading, 58)
+            }
         }
-        struct Row: Codable {
-            let name: String
-            let explanation: String
-        }
-        let rows = explanations.map { Row(name: $0.name, explanation: $0.explanation) }
-        guard let data = try? JSONEncoder().encode(rows) else { return }
-        UserDefaults.standard.set(data, forKey: storageKey(userId: userId, duaId: duaId))
-    }
-
-    static func explanations(userId: Int, duaId: String) -> [ExplanationModel]? {
-        guard let data = UserDefaults.standard.data(forKey: storageKey(userId: userId, duaId: duaId)) else { return nil }
-        struct Row: Codable {
-            let name: String
-            let explanation: String
-        }
-        guard let rows = try? JSONDecoder().decode([Row].self, from: data) else { return nil }
-        return rows.map { ExplanationModel(name: $0.name, explanation: $0.explanation) }
-    }
-
-    static func remove(userId: Int, duaId: String) {
-        UserDefaults.standard.removeObject(forKey: storageKey(userId: userId, duaId: duaId))
     }
 }
 
-// MARK: - Saved duas page (same content as web modal, full screen)
-
-private struct SavedDuasPageView: View {
-    @Environment(AppSession.self) private var session
-    @State private var items: [SavedDuaDTO] = []
-    @State private var loading = false
-    @State private var error: String?
-
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateStyle = .medium
-        f.timeStyle = .short
-        return f
-    }()
-
-    private var savedDuasSignedOutContent: some View {
-        GeometryReader { geo in
-            ScrollView {
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
-                    savedDuasSignedOutCard
-                    Spacer(minLength: 0)
-                }
-                .frame(minHeight: geo.size.height)
-                .frame(maxWidth: .infinity)
+private struct HomeHeroStarMark: View {
+    var body: some View {
+        HomeHeroStarShape()
+            .fill(BespokeColor.homeGold.opacity(0.14))
+            .overlay {
+                HomeHeroStarShape()
+                    .stroke(BespokeColor.homeGold, lineWidth: 1.15)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+            .frame(width: 14.5, height: 17)
+            .accessibilityHidden(true)
     }
+}
 
-    private var savedDuasSignedOutCard: some View {
-        VStack(spacing: 28) {
-            ZStack {
-                Circle()
-                    .fill(
-                        LinearGradient(
-                            colors: [BespokeColor.forest.opacity(0.14), BespokeColor.forest.opacity(0.06)],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    .frame(width: 96, height: 96)
-                Image(systemName: "bookmark.fill")
-                    .font(.system(size: 38, weight: .medium))
-                    .foregroundStyle(
-                        LinearGradient(
-                            colors: [BespokeColor.forest, BespokeColor.forest.opacity(0.75)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                    )
-                    .accessibilityHidden(true)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Bookmarks")
+private struct HomeHeroStarShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let center = CGPoint(x: rect.midX, y: rect.midY)
+        let pinchX = rect.width * 0.14
+        let pinchY = rect.height * 0.13
 
-            VStack(spacing: 12) {
-                Text("My heart's duas")
-                    .font(BespokeFont.display(30))
-                    .foregroundStyle(BespokeColor.forest)
-                    .multilineTextAlignment(.center)
+        let top = CGPoint(x: center.x, y: rect.minY)
+        let right = CGPoint(x: rect.maxX, y: center.y)
+        let bottom = CGPoint(x: center.x, y: rect.maxY)
+        let left = CGPoint(x: rect.minX, y: center.y)
 
-                Text("Sign in to keep your favourite duas in one place, so you can return to them anytime.")
-                    .font(BespokeFont.inter(16, weight: .regular))
-                    .foregroundStyle(BespokeColor.muted)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(4)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, 4)
-
-            Button {
-                session.presentAuth()
-            } label: {
-                Text("Sign in")
-                    .font(BespokeFont.inter(17, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-            }
-            .buttonStyle(.plain)
-            .background(LinearGradient.bespokeGold)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .shadow(color: .black.opacity(0.14), radius: 14, x: 0, y: 6)
-        }
-        .padding(32)
-        .frame(maxWidth: 480)
-        .background(Color.white)
-        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(BespokeColor.cardBorder, lineWidth: 1)
+        var path = Path()
+        path.move(to: top)
+        path.addQuadCurve(
+            to: right,
+            control: CGPoint(x: center.x + pinchX, y: center.y - pinchY)
         )
-        .shadow(color: .black.opacity(0.06), radius: 20, x: 0, y: 8)
-        .padding(.horizontal, 20)
+        path.addQuadCurve(
+            to: bottom,
+            control: CGPoint(x: center.x + pinchX, y: center.y + pinchY)
+        )
+        path.addQuadCurve(
+            to: left,
+            control: CGPoint(x: center.x - pinchX, y: center.y + pinchY)
+        )
+        path.addQuadCurve(
+            to: top,
+            control: CGPoint(x: center.x - pinchX, y: center.y - pinchY)
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct HomeNameOfTheDayCard: View {
+    let name: AllahNameDetail
+    var onReflect: (() -> Void)?
+
+    static var loading: some View {
+        HomeNameOfTheDayCardShell {
+            VStack(spacing: 14) {
+                Text("Name of the Day")
+                    .font(BespokeFont.display(18))
+                    .foregroundStyle(BespokeColor.forest.opacity(0.85))
+
+                ProgressView()
+                    .tint(BespokeColor.forest)
+
+                Text("Loading today's name…")
+                    .font(BespokeFont.inter(14, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+            }
+            .multilineTextAlignment(.center)
+        }
     }
 
-    /// Matches home `inputSection` title styling (`Write your heart’s dua`).
-    private var savedPageHeading: some View {
-        Text("My heart’s dua")
-            .font(BespokeFont.display(26))
-            .foregroundStyle(BespokeColor.forest)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.top, 11)
-            .padding(.horizontal, 20)
-            .padding(.bottom, 16)
+    static var dhikrFallback: some View {
+        HomeNameOfTheDayDhikrFallback()
     }
 
     var body: some View {
-        Group {
-            if !session.isLoggedIn {
-                savedDuasSignedOutContent
-            } else {
-                VStack(spacing: 0) {
-                    savedPageHeading
+        HomeNameOfTheDayCardShell {
+            VStack(spacing: 16) {
+                Text("Name of the Day")
+                    .font(BespokeFont.display(18))
+                    .foregroundStyle(BespokeColor.forest.opacity(0.85))
 
-                    Group {
-                        if loading && items.isEmpty {
-                            VStack(spacing: 16) {
-                                ProgressView()
-                                    .tint(BespokeColor.forest)
-                                    .scaleEffect(1.1)
-                                Text("Loading your saved duas…")
-                                    .font(BespokeFont.inter(16, weight: .medium))
-                                    .foregroundStyle(BespokeColor.muted)
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding(24)
-                        } else if let error {
-                            ContentUnavailableView {
-                                Label("Couldn’t load", systemImage: "exclamationmark.triangle")
-                            } description: {
-                                Text(error)
-                                    .font(BespokeFont.inter(15, weight: .regular))
-                                    .foregroundStyle(BespokeColor.muted)
-                                    .multilineTextAlignment(.center)
-                            }
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(BespokeColor.error.opacity(0.85))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding(24)
-                        } else if items.isEmpty {
-                            ContentUnavailableView {
-                                Label("Nothing saved yet", systemImage: "bookmark")
-                            } description: {
-                                Text("When you bookmark a generated dua, it appears here.")
-                                    .font(BespokeFont.inter(15, weight: .regular))
-                                    .foregroundStyle(BespokeColor.muted)
-                                    .multilineTextAlignment(.center)
-                            }
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(BespokeColor.muted)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .padding(24)
-                        } else {
-                            VStack(alignment: .leading, spacing: 0) {
-                                Text("Newest first")
-                                    .font(BespokeFont.inter(13, weight: .semibold))
-                                    .foregroundStyle(BespokeColor.muted)
-                                    .textCase(.none)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.horizontal, 20)
-                                    .padding(.bottom, 10)
+                Text(name.arabic)
+                    .font(BespokeFont.display(38))
+                    .foregroundStyle(BespokeColor.forest)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .environment(\.layoutDirection, .rightToLeft)
 
-                                List {
-                                    ForEach(items) { row in
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            Text(Self.dateFormatter.string(from: row.createdAt))
-                                                .font(BespokeFont.inter(13, weight: .semibold))
-                                                .foregroundStyle(BespokeColor.muted)
-                                                .textCase(.uppercase)
-                                                .tracking(0.3)
+                Text(name.transliteration)
+                    .font(BespokeFont.inter(16, weight: .semibold))
+                    .foregroundStyle(BespokeColor.nameGold)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
 
-                                            BespokeDuaCard(
-                                                dua: Self.duaReceiver(from: row, userId: session.currentUser?.userId),
-                                                isSavedVisual: true
-                                            ) {
-                                                Task { await delete(row) }
-                                            }
-                                        }
-                                        .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
-                                        .listRowSeparator(.hidden)
-                                        .listRowBackground(Color.clear)
-                                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                            Button(role: .destructive) {
-                                                Task { await delete(row) }
-                                            } label: {
-                                                Label("Delete", systemImage: "trash")
-                                            }
-                                        }
-                                    }
-                                }
-                                .listStyle(.plain)
-                                .scrollContentBackground(.hidden)
+                Text(name.translation)
+                    .font(BespokeFont.display(20))
+                    .foregroundStyle(BespokeColor.forest)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+
+                if let onReflect {
+                    Button(action: onReflect) {
+                        Text("Reflect on this name")
+                            .font(BespokeFont.inter(13, weight: .semibold))
+                            .foregroundStyle(BespokeColor.forest)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(Color.white.opacity(0.72))
+                            .clipShape(Capsule())
+                            .overlay {
+                                Capsule()
+                                    .stroke(BespokeColor.forest.opacity(0.14), lineWidth: 1)
                             }
-                        }
+                            .bespokeButtonHitArea(cornerRadius: 20)
                     }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .buttonStyle(BespokePlainButtonStyle())
+                    .padding(.top, 4)
+                }
+            }
+            .multilineTextAlignment(.center)
+        }
+    }
+}
+
+private struct HomeNameOfTheDayDhikrFallback: View {
+    @State private var selectedIndex = 0
+
+    private let dhikrItems = CraftingDhikr.carousel
+    private let rotationInterval: TimeInterval = 3.5
+
+    var body: some View {
+        HomeNameOfTheDayCardShell {
+            VStack(spacing: 10) {
+                Text("Name of the Day")
+                    .font(BespokeFont.display(16))
+                    .foregroundStyle(BespokeColor.forest.opacity(0.85))
+
+                dhikrContent(for: dhikrItems[selectedIndex])
+                    .id(dhikrItems[selectedIndex].id)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+                    .frame(maxHeight: 118)
+
+                paginationDots
+            }
+            .multilineTextAlignment(.center)
+        }
+        .task {
+            await rotateDhikr()
+        }
+    }
+
+    @ViewBuilder
+    private func dhikrContent(for item: CraftingDhikr) -> some View {
+        VStack(spacing: 6) {
+            Text(item.arabic)
+                .font(BespokeFont.display(24))
+                .foregroundStyle(BespokeColor.forest)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .lineLimit(3)
+                .minimumScaleFactor(0.6)
+                .environment(\.layoutDirection, .rightToLeft)
+
+            Text(item.transliteration)
+                .font(BespokeFont.inter(13, weight: .semibold))
+                .foregroundStyle(BespokeColor.nameGold)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+            Text(item.english)
+                .font(BespokeFont.inter(13, weight: .regular))
+                .foregroundStyle(BespokeColor.forest)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .lineLimit(2)
+                .minimumScaleFactor(0.8)
+        }
+    }
+
+    private var paginationDots: some View {
+        HStack(spacing: 6) {
+            ForEach(dhikrItems.indices, id: \.self) { index in
+                Circle()
+                    .fill(index == selectedIndex ? BespokeColor.forest : BespokeColor.forest.opacity(0.2))
+                    .frame(width: index == selectedIndex ? 7 : 5, height: index == selectedIndex ? 7 : 5)
+            }
+        }
+        .padding(.top, 2)
+    }
+
+    @MainActor
+    private func rotateDhikr() async {
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(rotationInterval))
+            withAnimation(.easeInOut(duration: 0.45)) {
+                selectedIndex = (selectedIndex + 1) % dhikrItems.count
+            }
+        }
+    }
+}
+
+private struct HomeNameOfTheDayCardShell<Content: View>: View {
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        ZStack {
+            Image("NameOfTheDayFrame")
+                .resizable()
+                .renderingMode(.original)
+                .scaledToFit()
+                .frame(maxWidth: .infinity)
+                .accessibilityHidden(true)
+
+            content()
+                .padding(.horizontal, 44)
+                .padding(.vertical, 52)
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct ReflectionModalOverlay: View {
+    @Binding var isPresented: Bool
+    @Binding var explanations: [ExplanationModel]
+
+    private var modalBinding: Binding<Bool> {
+        Binding(
+            get: { isPresented },
+            set: { newValue in
+                isPresented = newValue
+                if !newValue { explanations = [] }
+            }
+        )
+    }
+
+    var body: some View {
+        BespokeCardModalView(isPresented: modalBinding, title: "Reflection") {
+            VStack(alignment: .leading, spacing: 20) {
+                ForEach(explanations) { exp in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(exp.name)
+                            .font(BespokeFont.inter(16, weight: .semibold))
+                            .foregroundStyle(BespokeColor.nameGold)
+                        Text(exp.explanation)
+                            .font(BespokeFont.inter(15, weight: .regular))
+                            .foregroundStyle(BespokeColor.bodyText)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 4)
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .task(id: session.currentUser?.userId) {
-            await load()
+        .transition(.opacity)
+    }
+}
+
+private struct NameReflectionModalOverlay: View {
+    @Binding var isPresented: Bool
+    let nameOfTheDay: AllahNameDetail
+
+    var body: some View {
+        BespokeCardModalView(
+            isPresented: $isPresented,
+            title: nameOfTheDay.transliteration
+        ) {
+            VStack(spacing: 18) {
+                Text(nameOfTheDay.arabic)
+                    .font(BespokeFont.display(34))
+                    .foregroundStyle(BespokeColor.forest)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    .environment(\.layoutDirection, .rightToLeft)
+
+                Text(nameOfTheDay.translation)
+                    .font(BespokeFont.inter(17, weight: .semibold))
+                    .foregroundStyle(BespokeColor.nameGold)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+
+                Text(nameOfTheDay.meaning.isEmpty ? nameOfTheDay.translation : nameOfTheDay.meaning)
+                    .font(BespokeFont.inter(15, weight: .regular))
+                    .foregroundStyle(BespokeColor.bodyText)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(4)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity)
+            }
         }
+        .transition(.opacity)
+    }
+}
+
+private extension View {
+    func homeListChrome(cornerRadius: CGFloat) -> some View {
+        background(Color.white.opacity(0.82))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(BespokeColor.cardBorder.opacity(0.65), lineWidth: 1)
+            }
     }
 
-    /// `SavedDuas.dua` may be plain text, JSON we encoded, or JSON from the server; reflections also come from `SavedDuaReflectionsCache` when the API drops them.
-    private static func duaReceiver(from row: SavedDuaDTO, userId: Int?) -> DuaReceiver {
-        let raw = row.dua.trimmingCharacters(in: .whitespacesAndNewlines)
-        var text = raw
-        var exps: [ExplanationModel] = []
-
-        if raw.hasPrefix("{"), let data = raw.data(using: .utf8) {
-            struct FlexibleSavedDuaJSON: Decodable {
-                let dua: String?
-                let duaText: String?
-                let explanations: [GeneratedExplanationDTO]?
-            }
-            if let flex = try? JSONDecoder().decode(FlexibleSavedDuaJSON.self, from: data) {
-                text = flex.dua ?? flex.duaText ?? raw
-                exps = (flex.explanations ?? []).map {
-                    ExplanationModel(name: $0.name, explanation: $0.explanation)
-                }
-            }
-        }
-
-        if exps.isEmpty, let uid = userId, let cached = SavedDuaReflectionsCache.explanations(userId: uid, duaId: row.duaId), !cached.isEmpty {
-            exps = cached
-        }
-
-        return DuaReceiver(duaText: text, explanations: exps)
-    }
-
-    private func load() async {
-        guard let uid = session.currentUser?.userId else { return }
-        loading = true
-        error = nil
-        defer { loading = false }
-        do {
-            items = try await session.api().savedDuas(forUserId: uid)
-        } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    @ViewBuilder
+    func disablingTabBarMinimize() -> some View {
+        if #available(iOS 26.0, *) {
+            tabBarMinimizeBehavior(.never)
+        } else {
+            self
         }
     }
+}
 
-    private func delete(_ row: SavedDuaDTO) async {
-        do {
-            try await session.api().deleteSavedDua(id: row.duaId)
-            items.removeAll { $0.duaId == row.duaId }
-            if let uid = session.currentUser?.userId {
-                SavedDuaReflectionsCache.remove(userId: uid, duaId: row.duaId)
-            }
-        } catch {
-            self.error = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+private enum HomeScrollIdentity {
+    static let root = "home-dashboard-scroll"
+}
+
+private struct HomeMainNavigationChrome: ViewModifier {
+    let showsMainBar: Bool
+    let title: String
+
+    func body(content: Content) -> some View {
+        if showsMainBar {
+            content
+                .bespokeMainNavigationToolbar(title: title)
+        } else {
+            content
+                .toolbar(.hidden, for: .navigationBar)
         }
     }
 }
