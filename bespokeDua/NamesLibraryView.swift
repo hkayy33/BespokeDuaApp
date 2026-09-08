@@ -17,6 +17,11 @@ struct NamesLibraryView: View {
 
     var onSelectCategory: (NamesLibraryDestination) -> Void = { _ in }
 
+    @State private var searchText = ""
+    @State private var allNames: [AllahNameDetail] = []
+    @State private var namesLoading = false
+    @FocusState private var searchFocused: Bool
+
     private var categoryCardColumns: [GridItem] {
         if horizontalSizeClass == .regular {
             [
@@ -36,9 +41,15 @@ struct NamesLibraryView: View {
         ScrollView {
             VStack(spacing: 0) {
                 libraryHeading
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: dismissSearchFocus)
+
+                namesSearchBar
 
                 Group {
-                    if session.namesFeelingLabelsLoading && session.namesFeelingLabels.isEmpty && session.namesFeelingLabelsError == nil && !session.isReconnecting {
+                    if isSearchActive {
+                        librarySearchResults
+                    } else if session.namesFeelingLabelsLoading && session.namesFeelingLabels.isEmpty && session.namesFeelingLabelsError == nil && !session.isReconnecting {
                         loadingState
                     } else if session.isReconnecting || session.namesFeelingLabelsError != nil {
                         errorState(session.namesFeelingLabelsError ?? "")
@@ -47,26 +58,37 @@ struct NamesLibraryView: View {
                     }
                 }
                 .padding(.bottom, 24 + mainTabBarClearance)
+                .contentShape(Rectangle())
+                .simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
             }
             .bespokeLibraryContentFrame()
         }
         .scrollIndicators(.hidden, axes: .vertical)
+        .scrollDismissesKeyboard(.immediately)
         .background(BespokeColor.pageBackground)
         .toolbar(.hidden, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
         .safeAreaInset(edge: .top, spacing: 0) {
             BespokeFlowBackHeader(title: "99 Names", onBack: goBack)
+                .simultaneousGesture(TapGesture().onEnded { dismissSearchFocus() })
         }
         .bespokeEdgeBackNavigation(hidesNavigationBar: true)
         .task {
             if session.namesFeelingLabels.isEmpty {
                 await session.refreshFeelingLabels()
             }
+            await loadAllNamesForSearch()
         }
     }
 
     private func goBack() {
+        dismissSearchFocus()
         dismiss()
+    }
+
+    private func dismissSearchFocus() {
+        guard searchFocused else { return }
+        searchFocused = false
     }
 
     private var libraryHeading: some View {
@@ -75,7 +97,7 @@ struct NamesLibraryView: View {
                 .font(BespokeFont.display(28))
                 .foregroundStyle(BespokeColor.forest)
 
-            Text("Choose how you feel, or browse all 99 names.")
+            Text(isSearchActive ? "Search across all 99 names." : "Choose how you feel, or browse all 99 names.")
                 .font(BespokeFont.inter(15, weight: .regular))
                 .foregroundStyle(BespokeColor.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -83,7 +105,113 @@ struct NamesLibraryView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 16)
         .padding(.horizontal, BespokeLayout.libraryHorizontalPadding)
-        .padding(.bottom, 20)
+        .padding(.bottom, 16)
+    }
+
+    private var searchQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var isSearchActive: Bool {
+        !searchQuery.isEmpty
+    }
+
+    private var matchingNames: [AllahNameDetail] {
+        guard isSearchActive else { return [] }
+        var seen = Set<Int>()
+        return allNames.filter { name in
+            guard nameMatchesSearch(name) else { return false }
+            return seen.insert(name.number).inserted
+        }
+    }
+
+    private var namesSearchBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(BespokeColor.subtle)
+
+            TextField("Search by name or meaning…", text: $searchText)
+                .font(BespokeFont.inter(15, weight: .regular))
+                .foregroundStyle(BespokeColor.bodyText)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .focused($searchFocused)
+                .submitLabel(.search)
+                .onSubmit(dismissSearchFocus)
+
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(BespokeColor.subtle)
+                }
+                .buttonStyle(BespokePlainButtonStyle())
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(searchFocused ? BespokeColor.gold : BespokeColor.inputBorder, lineWidth: searchFocused ? 2 : 1)
+        }
+        .padding(.horizontal, BespokeLayout.libraryHorizontalPadding)
+        .padding(.bottom, 16)
+    }
+
+    @ViewBuilder
+    private var librarySearchResults: some View {
+        if namesLoading && allNames.isEmpty {
+            loadingState
+        } else if matchingNames.isEmpty {
+            ContentUnavailableView {
+                Label("No results", systemImage: "magnifyingglass")
+            } description: {
+                Text("Try a different spelling, or search by meaning.")
+                    .font(BespokeFont.inter(15, weight: .regular))
+                    .foregroundStyle(BespokeColor.muted)
+                    .multilineTextAlignment(.center)
+            } actions: {
+                Button("Clear search") {
+                    searchText = ""
+                }
+                .font(BespokeFont.inter(15, weight: .semibold))
+            }
+            .symbolRenderingMode(.hierarchical)
+            .foregroundStyle(BespokeColor.muted)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 36)
+            .padding(.horizontal, 24)
+        } else {
+            LazyVGrid(columns: categoryCardColumns, spacing: 16) {
+                ForEach(matchingNames) { detail in
+                    AllahNameCard(name: detail.summary, number: detail.number)
+                }
+            }
+            .padding(.horizontal, BespokeLayout.libraryHorizontalPadding)
+        }
+    }
+
+    private func nameMatchesSearch(_ name: AllahNameDetail) -> Bool {
+        name.arabic.localizedStandardContains(searchQuery)
+            || name.transliteration.localizedStandardContains(searchQuery)
+            || name.translation.localizedStandardContains(searchQuery)
+            || name.meaning.localizedStandardContains(searchQuery)
+            || name.feelingLabel.localizedStandardContains(searchQuery)
+            || "\(name.number)".contains(searchQuery)
+    }
+
+    @MainActor
+    private func loadAllNamesForSearch() async {
+        guard allNames.isEmpty else { return }
+        namesLoading = true
+        defer { namesLoading = false }
+        allNames = (try? await HomeNameOfTheDayService.allNames()) ?? []
     }
 
     private var categoryCards: some View {

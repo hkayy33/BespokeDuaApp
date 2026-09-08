@@ -64,11 +64,11 @@ struct BespokeLogoutModal: View {
                 .padding(.top, 24)
                 .padding(.bottom, 24)
             }
-            .frame(maxWidth: 340)
+            .frame(maxWidth: .infinity)
             .background(Color.white)
             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
             .shadow(color: .black.opacity(0.14), radius: 36, x: 0, y: 18)
-            .padding(.horizontal, 32)
+            .padding(.horizontal, 24)
         }
         .transition(.opacity.combined(with: .scale(scale: 0.94)))
     }

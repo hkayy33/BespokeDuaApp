@@ -4,20 +4,24 @@ import Foundation
 enum SupabaseConfig {
     static let projectURL = URL(string: "https://miwszixxfkbrnyaeivly.supabase.co")!
 
-    /// Production email confirmation (web bridge → `myapp://`).
+    /// Production email confirmation. Opens the app by universal link, then `myapp://`.
     static let productionEmailRedirectURL = URL(string: "https://www.bespokedua.com/auth/callback")!
 
     /// Local `ng serve` — matches `bespoke-dua-client` `environment.ts` `authRedirectUrl`.
     static let developmentEmailRedirectURL = URL(string: "http://localhost:4200/auth/callback")!
 
-    /// Web email confirmation lands on this URL, then opens the native app via custom scheme.
+    /// Hosts that can open the app via a universal link after email confirmation.
+    static let authCallbackHosts: Set<String> = ["www.bespokedua.com", "bespokedua.com"]
+
+    /// Web email confirmation lands on this URL. The site then opens the app
+    /// (universal link, or `myapp://` if the browser stays open).
     ///
-    /// - **DEBUG**: `http://localhost:4200/auth/callback` (run `ng serve` on the Mac).
-    /// - **Release**: `https://www.bespokedua.com/auth/callback`
-    /// - Override: `BESPOKE_AUTH_REDIRECT_URL`; force prod in Debug: `BESPOKE_AUTH_USE_PRODUCTION=1`
-    /// - Physical device: `BESPOKE_AUTH_REDIRECT_URL=http://<Mac-LAN-IP>:4200/auth/callback`
+    /// Always the production URL, including debug builds on a phone. `localhost`
+    /// cannot be opened from the device that receives the email.
+    ///
+    /// - Override: `BESPOKE_AUTH_REDIRECT_URL`
+    /// - Local web only: `BESPOKE_AUTH_USE_LOCAL=1` (simulator / Mac, not a phone)
     static var emailRedirectURL: URL {
-        #if DEBUG
         let env = ProcessInfo.processInfo.environment
 
         if let raw = env["BESPOKE_AUTH_REDIRECT_URL"]?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -26,15 +30,14 @@ enum SupabaseConfig {
             return url
         }
 
-        let useProduction = env["BESPOKE_AUTH_USE_PRODUCTION"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if useProduction == "1" || useProduction?.lowercased() == "true" {
-            return productionEmailRedirectURL
+        #if DEBUG
+        let useLocal = env["BESPOKE_AUTH_USE_LOCAL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if useLocal == "1" || useLocal?.lowercased() == "true" {
+            return developmentEmailRedirectURL
         }
-
-        return developmentEmailRedirectURL
-        #else
-        return productionEmailRedirectURL
         #endif
+
+        return productionEmailRedirectURL
     }
 
     /// Matches `auth-redirect.config.ts` and Info.plist URL scheme (`myapp`).

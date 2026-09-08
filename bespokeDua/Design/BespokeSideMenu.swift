@@ -120,9 +120,11 @@ private struct BespokeSideMenuOverlayModifier: ViewModifier {
     var allowsEdgeSwipe: Bool
 
     @Environment(\.openURL) private var openURL
+    @Environment(AppSession.self) private var session
 
     @State private var dragTranslation: CGFloat = 0
     @State private var openingDrag: CGFloat = 0
+    @State private var showLogoutConfirmation = false
 
     func body(content: Content) -> some View {
         content
@@ -139,6 +141,7 @@ private struct BespokeSideMenuOverlayModifier: ViewModifier {
                             Color.black.opacity(0.38 * revealProgress)
                                 .ignoresSafeArea()
                                 .onTapGesture {
+                                    guard !showLogoutConfirmation else { return }
                                     coordinator.close()
                                 }
 
@@ -156,10 +159,26 @@ private struct BespokeSideMenuOverlayModifier: ViewModifier {
                                     }
                                 },
                                 onOpenURL: { openURL($0) },
-                                onLogout: { coordinator.close() }
+                                onClose: { coordinator.close() },
+                                onRequestLogout: { showLogoutConfirmation = true }
                             )
                             .frame(width: panelWidth)
                             .offset(x: panelOffset)
+                            .allowsHitTesting(!showLogoutConfirmation)
+
+                            if showLogoutConfirmation {
+                                BespokeLogoutModal(
+                                    message: "You'll need to sign in again to access saved duas and your profile.",
+                                    onCancel: { showLogoutConfirmation = false },
+                                    onConfirm: {
+                                        showLogoutConfirmation = false
+                                        coordinator.close()
+                                        session.logout()
+                                    }
+                                )
+                                .frame(width: geo.size.width, height: geo.size.height)
+                                .transition(.opacity.combined(with: .scale(scale: 0.94)))
+                            }
                         }
                         .transition(.opacity)
                         .gesture(closeSwipeGesture(panelWidth: panelWidth))
@@ -170,6 +189,12 @@ private struct BespokeSideMenuOverlayModifier: ViewModifier {
             .animation(.spring(response: 0.34, dampingFraction: 0.86), value: coordinator.isPresented)
             .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: openingDrag)
             .animation(.interactiveSpring(response: 0.34, dampingFraction: 0.86), value: dragTranslation)
+            .animation(.easeInOut(duration: 0.28), value: showLogoutConfirmation)
+            .onChange(of: coordinator.isPresented) { _, isPresented in
+                if !isPresented {
+                    showLogoutConfirmation = false
+                }
+            }
     }
 
     private func currentPanelOffset(panelWidth: CGFloat) -> CGFloat {
@@ -206,7 +231,7 @@ private struct BespokeSideMenuOverlayModifier: ViewModifier {
     private func closeSwipeGesture(panelWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .onChanged { value in
-                guard coordinator.isPresented else { return }
+                guard coordinator.isPresented, !showLogoutConfirmation else { return }
                 guard value.translation.width < 0 else {
                     dragTranslation = 0
                     return
@@ -214,7 +239,7 @@ private struct BespokeSideMenuOverlayModifier: ViewModifier {
                 dragTranslation = max(value.translation.width, -panelWidth)
             }
             .onEnded { value in
-                guard coordinator.isPresented else { return }
+                guard coordinator.isPresented, !showLogoutConfirmation else { return }
                 let shouldClose = value.translation.width < -panelWidth * 0.22
                     || value.predictedEndTranslation.width < -panelWidth * 0.35
                 dragTranslation = 0
@@ -263,10 +288,10 @@ private struct BespokeSideMenuPanel: View {
     let onSupportEmail: () -> Void
     let onAbout: () -> Void
     let onOpenURL: (URL) -> Void
-    let onLogout: () -> Void
+    let onClose: () -> Void
+    let onRequestLogout: () -> Void
 
     @State private var feedbackExpanded = false
-    @State private var showLogoutConfirmation = false
     @State private var showShareSheet = false
 
     var body: some View {
@@ -309,7 +334,7 @@ private struct BespokeSideMenuPanel: View {
 
                 VStack(spacing: session.isLoggedIn ? 14 : 20) {
                     if session.isLoggedIn {
-                        BespokeAccountActionsCard(onLogout: { showLogoutConfirmation = true })
+                        BespokeAccountActionsCard(onLogout: onRequestLogout)
                     }
 
                     HStack(spacing: 22) {
@@ -346,24 +371,11 @@ private struct BespokeSideMenuPanel: View {
                 )
             }
             .shadow(color: .black.opacity(0.14), radius: 18, x: 4, y: 0)
-
-            if showLogoutConfirmation {
-                BespokeLogoutModal(
-                    message: "You'll need to sign in again to access saved duas and your profile.",
-                    onCancel: { showLogoutConfirmation = false },
-                    onConfirm: {
-                        showLogoutConfirmation = false
-                        onLogout()
-                        session.logout()
-                    }
-                )
-                .transition(.opacity.combined(with: .scale(scale: 0.94)))
-            }
         }
-        .animation(.easeInOut(duration: 0.28), value: showLogoutConfirmation)
         .task {
             guard session.isLoggedIn else { return }
             subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
+            await subscriptionManager.loadProduct()
             await subscriptionManager.refreshEntitlements()
         }
     }
@@ -422,7 +434,11 @@ private struct BespokeSideMenuPanel: View {
                 .buttonStyle(BespokePlainButtonStyle())
                 .padding(.top, 6)
             } else {
-                BespokePlusUpgradeCard(onUpgrade: onManageSubscription)
+                BespokePlusUpgradeCard(
+                    onUpgrade: onManageSubscription,
+                    thenPriceLine: subscriptionManager.eligibleIntroOffer?.thenPriceLine
+                        ?? subscriptionManager.plusMonthlyDisplayPrice
+                )
                     .padding(.top, 6)
             }
         }
@@ -441,7 +457,7 @@ private struct BespokeSideMenuPanel: View {
                 .foregroundStyle(BespokeColor.forest)
 
             Button {
-                onLogout()
+                onClose()
                 session.presentAuth()
             } label: {
                 Text("Sign in")

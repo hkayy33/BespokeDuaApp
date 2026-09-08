@@ -72,11 +72,13 @@ struct ProfileView: View {
                         usernameSection
                         passwordSection
                         if surface == .accountSettings {
+                            NameQuizSettingsCard()
                             dangerSection
                         }
                     case .subscription:
                         subscriptionSection
                     case .settings:
+                        NameQuizSettingsCard()
                         dangerSection
                     }
 
@@ -273,27 +275,23 @@ struct ProfileView: View {
                         .foregroundStyle(BespokeColor.muted)
                 }
                 .padding(.top, 4)
-            } else if let intro = subscriptionManager.eligibleIntroOffer {
-                Text(intro.headline)
+            } else {
+                Text(subscriptionManager.eligibleIntroOffer?.headline ?? BespokePlusOfferCopy.freeMonthHeadline)
                     .font(BespokeFont.inter(18, weight: .semibold))
                     .foregroundStyle(BespokeColor.forest)
                     .padding(.top, 2)
-                if let thenPrice = intro.thenPriceLine {
+                if let thenPrice = subscriptionManager.eligibleIntroOffer?.thenPriceLine
+                    ?? subscriptionManager.plusMonthlyDisplayPrice {
                     Text("then \(thenPrice)")
                         .font(BespokeFont.inter(14, weight: .medium))
                         .foregroundStyle(BespokeColor.muted)
                 }
-            } else if let priceLine = subscriptionManager.plusMonthlyDisplayPrice {
-                Text(priceLine)
-                    .font(BespokeFont.inter(18, weight: .semibold))
-                    .foregroundStyle(BespokeColor.forest)
-                    .padding(.top, 2)
             }
 
             Button {
                 showUpgradeModal = true
             } label: {
-                Label("Upgrade to Bespoke Plus", systemImage: "sparkles")
+                Label(BespokePlusOfferCopy.startFreeMonth, systemImage: "sparkles")
                     .font(BespokeFont.inter(16, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)
@@ -332,7 +330,7 @@ struct ProfileView: View {
         }
         let remaining = DailyGenerationQuota.duasRemainingToday(userId: userId)
         let cap = DailyGenerationQuota.freeDailyLimit
-        return "\(remaining)/\(cap) duas left today · Upgrade for unlimited"
+        return "\(remaining)/\(cap) duas left today · 1 month free for unlimited"
     }
 
     private var usernameSection: some View {
@@ -475,6 +473,8 @@ struct ProfileView: View {
                 .foregroundStyle(BespokeColor.muted)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+
+            NameQuizSettingsCard()
 
             Button {
                 session.presentAuth()

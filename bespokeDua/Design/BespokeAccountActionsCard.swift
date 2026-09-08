@@ -41,6 +41,12 @@ enum BespokeSubscriptionDisplay {
     }
 }
 
+enum BespokePlusOfferCopy {
+    static let freeMonthHeadline = "1 month free"
+    static let startFreeMonth = "Start free month"
+    static let premiumBadge = "1 month free"
+}
+
 enum BespokePlusFeatures {
     static let items = [
         "Zero daily limits",
@@ -76,6 +82,7 @@ struct BespokePlusFeaturesList: View {
 
 struct BespokePlusUpgradeCard: View {
     let onUpgrade: () -> Void
+    var thenPriceLine: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -87,10 +94,21 @@ struct BespokePlusUpgradeCard: View {
             }
             .foregroundStyle(BespokeColor.forest)
 
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Get 1 month free")
+                    .font(BespokeFont.inter(15, weight: .semibold))
+                    .foregroundStyle(LinearGradient.bespokeGold)
+                if let thenPriceLine, !thenPriceLine.isEmpty {
+                    Text("then \(thenPriceLine)")
+                        .font(BespokeFont.inter(13, weight: .medium))
+                        .foregroundStyle(BespokeColor.muted)
+                }
+            }
+
             BespokePlusFeaturesList()
 
             Button(action: onUpgrade) {
-                Text("Upgrade to Bespoke Plus")
+                Text(BespokePlusOfferCopy.startFreeMonth)
                     .font(BespokeFont.inter(14, weight: .semibold))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity)

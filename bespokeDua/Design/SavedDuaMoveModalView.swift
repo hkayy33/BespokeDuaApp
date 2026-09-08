@@ -77,8 +77,13 @@ struct SavedDuaMoveModalView: View {
                         HStack(spacing: 10) {
                             Image(systemName: "folder.badge.plus")
                                 .font(.system(size: 16, weight: .semibold))
-                            Text("Add collections")
-                                .font(BespokeFont.inter(16, weight: .semibold))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Add collections")
+                                    .font(BespokeFont.inter(16, weight: .semibold))
+                                Text(BespokePlusOfferCopy.freeMonthHeadline)
+                                    .font(BespokeFont.inter(13, weight: .medium))
+                                    .foregroundStyle(BespokeColor.muted)
+                            }
                         }
                         .foregroundStyle(BespokeColor.forest)
                         .frame(maxWidth: .infinity)

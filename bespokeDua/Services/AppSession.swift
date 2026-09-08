@@ -42,12 +42,14 @@ final class AppSession {
     private var duaCollectionsRefreshTask: Task<Void, Never>?
     private var duaFeedRefreshTask: Task<Void, Never>?
     private var duaFeedAutoRefreshTask: Task<Void, Never>?
+    private var duaFeedReactionWatchTask: Task<Void, Never>?
 
     private static let savedDuasMaxAttempts = 3
     private static let savedDuasRetryDelay: Duration = .milliseconds(350)
     private static let duaCollectionsMaxAttempts = 3
     private static let duaCollectionsRetryDelay: Duration = .milliseconds(350)
     private static let duaFeedAutoRefreshInterval: Duration = .seconds(45)
+    private static let duaFeedReactionWatchInterval: Duration = .seconds(5)
 
     private enum AuthMode: String {
         case legacy
@@ -98,11 +100,16 @@ final class AppSession {
                 setAuthMode(.supabase)
                 if await completeSupabaseSignIn() {
                     showAuthSheet = false
+                    return
+                }
+                if shouldTryLegacyLoginAfterSyncFailure() {
+                    authError = nil
+                    await supabase.signOut()
+                    await legacyLogin(email: email, password: password)
                 }
                 return
-            } catch let error as SupabaseAuthServiceError {
-                authError = error.errorDescription
-                return
+            } catch is SupabaseAuthServiceError {
+                // An unverified Supabase signup must not block an older password account.
             } catch {
                 if !shouldTryLegacyLogin(error) {
                     authError = mapSupabaseError(error)
@@ -120,6 +127,11 @@ final class AppSession {
         defer { authInFlight = false }
 
         if supabase.isConfigured {
+            if await emailAlreadyHasAccount(email) {
+                authError = "This email already has an account. Sign in with your password."
+                return .failed
+            }
+
             supabase.storePendingUsername(username)
             do {
                 let outcome = try await supabase.signUp(email: email, password: password)
@@ -211,7 +223,7 @@ final class AppSession {
         }
     }
 
-    /// Handles email-verification and password-recovery deep links (`myapp://auth/callback`).
+    /// Handles email-verification and password-recovery links (`myapp://` or the site universal link).
     func handleAuthURL(_ url: URL) async {
         guard supabase.isConfigured, SupabaseAuthService.isAuthCallbackURL(url) else { return }
 
@@ -512,6 +524,10 @@ final class AppSession {
         }
     }
 
+    private func emailAlreadyHasAccount(_ email: String) async -> Bool {
+        (try? await client.emailInUse(email)) == true
+    }
+
     private func enterEmailVerificationStage(email: String) {
         pendingVerificationEmail = email
         UserDefaults.standard.set(email, forKey: Self.pendingEmailKey)
@@ -531,9 +547,15 @@ final class AppSession {
 
     private func shouldTryLegacyLogin(_ error: Error) -> Bool {
         let message = (error as? LocalizedError)?.errorDescription?.lowercased() ?? error.localizedDescription.lowercased()
-        if message.contains("email not confirmed") { return false }
+        if message.contains("email not confirmed") { return true }
         if message.contains("invalid login credentials") { return true }
+        if message.contains("already has an account") { return true }
         return message.contains("invalid") && message.contains("password")
+    }
+
+    private func shouldTryLegacyLoginAfterSyncFailure() -> Bool {
+        let message = authError?.lowercased() ?? ""
+        return message.contains("already has an account") || message.contains("sign in with your password")
     }
 
     private func mapSupabaseError(_ error: Error) -> String {
@@ -548,7 +570,10 @@ final class AppSession {
         scheduleSavedDuasRefresh()
         scheduleDuaCollectionsRefresh()
         scheduleDuaFeedRefresh(silent: true)
-        Task { await warmUpAppContent() }
+        Task {
+            await warmUpAppContent()
+            await PushDeviceRegistration.registerIfAuthorized(session: self)
+        }
     }
 
     private func setAuthMode(_ mode: AuthMode) {
@@ -753,11 +778,60 @@ final class AppSession {
                 await self?.refreshDuaFeed(showLoading: false)
             }
         }
+        startDuaFeedReactionWatch()
     }
 
     func stopDuaFeedAutoRefresh() {
         duaFeedAutoRefreshTask?.cancel()
         duaFeedAutoRefreshTask = nil
+        stopDuaFeedReactionWatch()
+    }
+
+    func startDuaFeedReactionWatch() {
+        duaFeedReactionWatchTask?.cancel()
+        Task { await DuaFeedReactionNotifier.requestAuthorizationIfNeeded() }
+        duaFeedReactionWatchTask = Task { @MainActor [weak self] in
+            await self?.pollOwnDuaReactions()
+            while !Task.isCancelled {
+                try? await Task.sleep(for: Self.duaFeedReactionWatchInterval)
+                guard !Task.isCancelled else { break }
+                await self?.pollOwnDuaReactions()
+            }
+        }
+    }
+
+    func stopDuaFeedReactionWatch() {
+        duaFeedReactionWatchTask?.cancel()
+        duaFeedReactionWatchTask = nil
+    }
+
+    private func pollOwnDuaReactions() async {
+        guard let userId = currentUser?.userId else { return }
+        do {
+            let dtos = try await client.activeDuaFeedPosts(userId: userId)
+            let posts = dtos.compactMap { dto -> DuaFeedPost? in
+                guard var post = dto.asFeedPost(), post.isActive else { return nil }
+                post.isOwnPost = true
+                return post
+            }
+            applyOwnPostReactionCounts(posts)
+            await DuaFeedReactionNotifier.noteOwnPostCounts(userId: userId, posts: posts)
+        } catch {
+            return
+        }
+    }
+
+    private func applyOwnPostReactionCounts(_ posts: [DuaFeedPost]) {
+        let counts = Dictionary(uniqueKeysWithValues: posts.map { ($0.serverPostId, $0.duaCount) })
+        for index in duaFeedPosts.indices {
+            guard let count = counts[duaFeedPosts[index].serverPostId] else { continue }
+            duaFeedPosts[index].duaCount = count
+            duaFeedPosts[index].isOwnPost = true
+        }
+        for index in duaFeedUserActivePosts.indices {
+            guard let count = counts[duaFeedUserActivePosts[index].serverPostId] else { continue }
+            duaFeedUserActivePosts[index].duaCount = count
+        }
     }
 
     func refreshDuaFeed(showLoading: Bool, refreshSavedDuas: Bool = true) async {
@@ -927,6 +1001,7 @@ final class AppSession {
 
         duaFeedUserActivePosts = await client.userActiveFeedPosts(userId: userId)
         syncDuaFeedOwnPostFlags()
+        await DuaFeedReactionNotifier.noteOwnPostCounts(userId: userId, posts: duaFeedUserActivePosts)
     }
 
     private func syncDuaFeedOwnPostFlags() {

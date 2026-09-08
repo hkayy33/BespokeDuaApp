@@ -50,6 +50,26 @@ extension EnvironmentValues {
     }
 }
 
+struct OpenBespokeDuaAction {
+    var open: (String) -> Void
+
+    func callAsFunction(_ text: String) {
+        open(text)
+    }
+}
+
+private struct OpenBespokeDuaKey: EnvironmentKey {
+    static let defaultValue = OpenBespokeDuaAction { _ in }
+}
+
+extension EnvironmentValues {
+    /// Opens the Bespoke screen with the given draft and starts generation.
+    var openBespokeDua: OpenBespokeDuaAction {
+        get { self[OpenBespokeDuaKey.self] }
+        set { self[OpenBespokeDuaKey.self] = newValue }
+    }
+}
+
 struct ContentView: View {
     @Environment(AppSession.self) private var session
     @Environment(SubscriptionManager.self) private var subscriptionManager
@@ -79,6 +99,7 @@ struct ContentView: View {
     @State private var profileTabRootID = UUID()
     @State private var homePath = NavigationPath()
     @State private var duaFeedPath = NavigationPath()
+    @State private var duaFeedReactionOpenScheduled = false
     @State private var savedPath = NavigationPath()
     @State private var homeActivityRefresh = 0
     @State private var homeScrollPosition = ScrollPosition()
@@ -88,9 +109,12 @@ struct ContentView: View {
     /// Bumps at local midnight (and on resume) so today's name always reloads.
     @State private var nameOfTheDayDayKey = HomeNameOfTheDayService.localDayKey()
     @State private var showNameReflectionModal = false
+    @State private var showNameQuizWhatsNew = false
+    @State private var didFinishNameQuizWhatsNew = false
     @State private var recentSearchesExpanded = false
     @State private var sideMenu = BespokeSideMenuCoordinator()
     @State private var hidesMainTabBar = false
+    @Environment(NameQuizNotificationService.self) private var nameQuiz
 
     private var mainTabBarClearance: CGFloat {
         (isKeyboardVisible || hidesMainTabBar) ? 0 : mainTabBarHeight
@@ -122,6 +146,7 @@ struct ContentView: View {
             .animation(.easeInOut(duration: 0.28), value: showUpgradeInfoModal)
             .animation(.easeInOut(duration: 0.28), value: showReflectionModal)
             .animation(.easeInOut(duration: 0.28), value: showNameReflectionModal)
+            .animation(.easeInOut(duration: 0.28), value: showNameQuizWhatsNew)
             .animation(.easeInOut(duration: 0.28), value: showSaveDestinationModal)
     }
 
@@ -136,6 +161,7 @@ struct ContentView: View {
         reflectionOverlay
         nameReflectionOverlay
         saveDestinationOverlay
+        nameQuizWhatsNewOverlay
     }
 
     @ViewBuilder
@@ -176,14 +202,41 @@ struct ContentView: View {
                     nameOfTheDayDayKey = HomeNameOfTheDayService.localDayKey()
                     dailyQuotaRefresh += 1
                     session.startDuaFeedAutoRefresh()
+                    openPendingNameQuiz()
+                    DuaFeedReactionRouter.deliverIfSceneIsActive()
                     Task {
                         subscriptionManager.updateDatabaseSubscriptionStatus(plan: session.currentUser?.plan)
                         await subscriptionManager.refreshEntitlements()
                         await session.refreshDuaFeed(showLoading: false)
+                        await nameQuiz.refreshAuthorizationStatus()
+                        await AppUpdateReminderService.refresh()
                     }
                 } else {
                     session.stopDuaFeedAutoRefresh()
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .nameQuizOpened)) { _ in
+                openPendingNameQuiz()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .duaFeedReactionOpened)) { _ in
+                openDuaFeedFromReaction()
+            }
+            .task {
+                await nameQuiz.refreshAuthorizationStatus()
+                openPendingNameQuiz()
+                if DuaFeedReactionRouter.pendingOpenMyPosts {
+                    openDuaFeedFromReaction()
+                }
+                presentNameQuizWhatsNewIfNeeded()
+            }
+            .onChange(of: session.showAuthSheet) { _, shown in
+                if !shown {
+                    presentNameQuizWhatsNewIfNeeded()
+                }
+            }
+            .onChange(of: showNameQuizWhatsNew) { _, shown in
+                guard !shown else { return }
+                Task { await finishNameQuizWhatsNew() }
             }
             .task {
                 while !Task.isCancelled {
@@ -253,6 +306,9 @@ struct ContentView: View {
             .environment(\.presentSaveDuaModal) { dua in
                 Task { await handleSaveTap(dua) }
             }
+            .environment(\.openBespokeDua, OpenBespokeDuaAction { draft in
+                openBespokeFlow(draft: draft)
+            })
     }
 
     private var tabViewWithCoreEnvironments: some View {
@@ -319,6 +375,46 @@ struct ContentView: View {
             }
         case let .namesCategory(destination):
             NamesFilteredListView(destination: destination)
+        case let .nameQuiz(link):
+            NameQuizRevealView(link: link) {
+                homePath.append(HomeRoute.names)
+            }
+        }
+    }
+
+    private func openDuaFeedFromReaction() {
+        // Notification tap, scene resume, and the feed view can all request this
+        // in the same frame. Defer until the scene is active so a background tap
+        // does not update navigation before UIKit is ready.
+        guard !duaFeedReactionOpenScheduled else { return }
+        duaFeedReactionOpenScheduled = true
+
+        DispatchQueue.main.async {
+            sideMenu.close()
+            sideMenu.accountSettingsPresented = false
+            selectedTab = .duaFeed
+            DispatchQueue.main.async {
+                if !duaFeedPath.isEmpty {
+                    duaFeedPath = NavigationPath()
+                }
+                duaFeedReactionOpenScheduled = false
+            }
+        }
+    }
+
+    private func openPendingNameQuiz() {
+        guard let link = NameQuizRouter.shared.consume() else { return }
+        showNameQuizWhatsNew = false
+        didFinishNameQuizWhatsNew = true
+        sideMenu.close()
+        sideMenu.accountSettingsPresented = false
+        selectedTab = .home
+        showNameReflectionModal = false
+
+        DispatchQueue.main.async {
+            var path = NavigationPath()
+            path.append(HomeRoute.nameQuiz(link))
+            homePath = path
         }
     }
 
@@ -422,6 +518,31 @@ struct ContentView: View {
     }
 
     @ViewBuilder
+    private var nameQuizWhatsNewOverlay: some View {
+        if showNameQuizWhatsNew {
+            NameQuizWhatsNewModal(isPresented: $showNameQuizWhatsNew)
+                .transition(.opacity)
+        }
+    }
+
+    private func presentNameQuizWhatsNewIfNeeded() {
+        guard !didFinishNameQuizWhatsNew else { return }
+        guard nameQuiz.shouldPresentWhatsNew else { return }
+        guard !session.showAuthSheet else { return }
+        guard NameQuizRouter.shared.pending == nil else { return }
+        guard homePath.isEmpty else { return }
+        guard !showNameQuizWhatsNew else { return }
+        showNameQuizWhatsNew = true
+    }
+
+    private func finishNameQuizWhatsNew() async {
+        guard !didFinishNameQuizWhatsNew else { return }
+        didFinishNameQuizWhatsNew = true
+        try? await Task.sleep(for: .milliseconds(350))
+        await nameQuiz.completeWhatsNewAndRequestPermission()
+    }
+
+    @ViewBuilder
     private var nameReflectionOverlay: some View {
         if showNameReflectionModal, let nameOfTheDay {
             nameReflectionModalContent(nameOfTheDay)
@@ -478,6 +599,7 @@ struct ContentView: View {
         case sunnah
         case names
         case namesCategory(NamesLibraryDestination)
+        case nameQuiz(NameQuizDeepLink)
     }
 
     private var recentBespokeActivity: HomeRecentActivity.Snapshot? {
@@ -586,6 +708,11 @@ struct ContentView: View {
             }
 
             homeNameADaySection
+
+            if nameQuiz.hasSeenWhatsNew && !nameQuiz.remindersAreOn {
+                NameQuizSettingsCard()
+                    .padding(.horizontal, HomeCardLayout.horizontalPadding)
+            }
 
             if showsHomeContinueSection {
                 homeContinueSection
@@ -809,7 +936,8 @@ struct ContentView: View {
                 .padding(.bottom, mainTabBarClearance)
             }
             .scrollIndicators(.hidden, axes: .vertical)
-            .scrollDismissesKeyboard(.interactively)
+            .scrollDismissesKeyboard(.never)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             .background(BespokeColor.pageBackground)
         }
     }
@@ -835,6 +963,41 @@ struct ContentView: View {
             )
         }
         homeActivityRefresh += 1
+    }
+
+    private func openBespokeFlow(draft text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        sunnahRestoreSnapshot = nil
+        requestText = trimmed
+        generated = []
+        savedDuaIDs = []
+        savedDuaServerIdByLocalId = [:]
+        generateError = nil
+        emptyRequestWarning = false
+        duaFieldFocused = false
+
+        selectedTab = .home
+        DispatchQueue.main.async {
+            var path = NavigationPath()
+            path.append(HomeRoute.bespoke)
+            homePath = path
+        }
+
+        guard !trimmed.isEmpty else { return }
+        guard session.isLoggedIn else {
+            session.presentAuth()
+            return
+        }
+        if shouldShowUpgradeInsteadOfGenerate {
+            presentUpgradeSheetForDailyLimit()
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.25)) {
+            generateInFlight = true
+        }
+        Task {
+            await runGenerate(trimmed: trimmed)
+        }
     }
 
     private func openBespokeFlow(restore activity: HomeRecentActivity.Snapshot?) {
@@ -910,19 +1073,35 @@ struct ContentView: View {
                 BespokePlaceholderTextEditor(
                     text: $requestText,
                     placeholder: "Type your dua here…",
+                    isEditable: !generateInFlight,
                     focus: $duaFieldFocused
                 )
+                .transaction { $0.animation = nil }
                 .padding(12)
                 .background(Color.white)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 14, style: .continuous)
-                        .stroke(duaFieldFocused ? BespokeColor.gold : BespokeColor.inputBorder, lineWidth: duaFieldFocused ? 2 : 1)
+                        .stroke(
+                            emptyRequestWarning ? BespokeColor.error : (duaFieldFocused ? BespokeColor.gold : BespokeColor.inputBorder),
+                            lineWidth: emptyRequestWarning || duaFieldFocused ? 2 : 1
+                        )
                 )
+                .onChange(of: requestText) { _, newValue in
+                    if emptyRequestWarning, !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        emptyRequestWarning = false
+                    }
+                }
 
                 Text("Example: “O Allah, grant me success in…”")
                     .font(BespokeFont.inter(13, weight: .regular))
                     .foregroundStyle(BespokeColor.muted)
+
+                if emptyRequestWarning {
+                    Label("Please write your dua first.", systemImage: "exclamationmark.circle.fill")
+                        .font(BespokeFont.inter(13, weight: .medium))
+                        .foregroundStyle(BespokeColor.error)
+                }
             }
             .padding(18)
             .frame(maxWidth: .infinity)
@@ -942,7 +1121,7 @@ struct ContentView: View {
                         HStack(spacing: 10) {
                             Image(systemName: "sparkles")
                                 .font(.system(size: 16, weight: .semibold))
-                            Text("Upgrade")
+                            Text(BespokePlusOfferCopy.startFreeMonth)
                                 .font(BespokeFont.inter(17, weight: .semibold))
                         }
                         .foregroundStyle(.white)
@@ -983,12 +1162,6 @@ struct ContentView: View {
                 }
             }
             .id(dailyQuotaRefresh)
-
-            if emptyRequestWarning {
-                Label("Please write your dua first.", systemImage: "exclamationmark.circle.fill")
-                    .font(BespokeFont.inter(14, weight: .medium))
-                    .foregroundStyle(BespokeColor.error)
-            }
 
             if generateError != nil {
                 Label("Something went wrong. Try again.", systemImage: "wifi.exclamationmark")
@@ -1358,6 +1531,15 @@ struct BespokeDuaCard: View {
 
     private static let actionBarHeight: CGFloat = 30
 
+    /// Reflections are the 99 Names embedded in a generated dua. Written duas have none.
+    private var nameReflections: [ExplanationModel] {
+        dua.explanations.filter { explanation in
+            let name = explanation.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let text = explanation.explanation.trimmingCharacters(in: .whitespacesAndNewlines)
+            return !name.isEmpty && name.lowercased() != "source" && !text.isEmpty
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(dua.duaText)
@@ -1386,18 +1568,21 @@ struct BespokeDuaCard: View {
                 }
 
                 Spacer(minLength: 0)
-                Button {
-                    presentReflectionModal?(dua.explanations)
-                } label: {
-                    Image(systemName: "lightbulb")
-                        .font(.system(size: 16))
-                        .foregroundStyle(BespokeColor.nameGold)
-                        .padding(6)
-                        .background(BespokeColor.cardBorder.opacity(0.35))
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                        .bespokeButtonHitArea(cornerRadius: 8)
+                if !nameReflections.isEmpty {
+                    Button {
+                        presentReflectionModal?(nameReflections)
+                    } label: {
+                        Image(systemName: "lightbulb")
+                            .font(.system(size: 16))
+                            .foregroundStyle(BespokeColor.nameGold)
+                            .padding(6)
+                            .background(BespokeColor.cardBorder.opacity(0.35))
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .bespokeButtonHitArea(cornerRadius: 8)
+                    }
+                    .buttonStyle(BespokePlainButtonStyle())
+                    .accessibilityLabel("Name reflection")
                 }
-                .buttonStyle(BespokePlainButtonStyle())
 
                 Button(action: onSave) {
                     Image(systemName: isSavedVisual ? "bookmark.fill" : "bookmark")
@@ -1532,7 +1717,7 @@ struct BespokeCardModalView<Content: View>: View {
                 HStack(spacing: 6) {
                     Image(systemName: "diamond.fill")
                         .font(.system(size: 9, weight: .bold))
-                    Text("Premium")
+                    Text(BespokePlusOfferCopy.premiumBadge)
                         .font(BespokeFont.inter(11.5, weight: .semibold))
                         .textCase(.uppercase)
                         .tracking(0.45)
@@ -1757,8 +1942,13 @@ private struct SaveDuaDestinationModalView: View {
                 HStack(spacing: 10) {
                     Image(systemName: "folder.badge.plus")
                         .font(.system(size: 16, weight: .semibold))
-                    Text("Add collections")
-                        .font(BespokeFont.inter(16, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Add collections")
+                            .font(BespokeFont.inter(16, weight: .semibold))
+                        Text(BespokePlusOfferCopy.freeMonthHeadline)
+                            .font(BespokeFont.inter(13, weight: .medium))
+                            .foregroundStyle(BespokeColor.muted)
+                    }
                 }
                 .foregroundStyle(BespokeColor.forest)
                 .frame(maxWidth: .infinity)
@@ -1982,12 +2172,12 @@ struct UpgradeInfoModalView: View {
     private var upgradeContent: some View {
         Group {
             if emphasizeDailyLimit {
-                Text("You’ve used all \(DailyGenerationQuota.freeDailyLimit) free duas for today. Subscribe to continue.")
+                Text("You’ve used all \(DailyGenerationQuota.freeDailyLimit) free duas for today. Start with 1 month free to continue.")
                     .font(BespokeFont.inter(16, weight: .regular))
                     .foregroundStyle(BespokeColor.bodyText)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                Text("Subscribe for unlimited duas. Free accounts can create up to \(DailyGenerationQuota.freeDailyLimit) duas per day.")
+                Text("Start with 1 month free for unlimited duas. Free accounts can create up to \(DailyGenerationQuota.freeDailyLimit) duas per day.")
                     .font(BespokeFont.inter(16, weight: .regular))
                     .foregroundStyle(BespokeColor.bodyText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2004,19 +2194,16 @@ struct UpgradeInfoModalView: View {
                                 .foregroundStyle(BespokeColor.muted)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    } else if let intro = subscriptionManager.eligibleIntroOffer {
-                        Text(intro.headline)
+                    } else {
+                        Text(subscriptionManager.eligibleIntroOffer?.headline ?? BespokePlusOfferCopy.freeMonthHeadline)
                             .font(BespokeFont.inter(20, weight: .semibold))
                             .foregroundStyle(LinearGradient.bespokeGold)
-                        if let thenPrice = intro.thenPriceLine {
+                        if let thenPrice = subscriptionManager.eligibleIntroOffer?.thenPriceLine
+                            ?? subscriptionManager.plusMonthlyDisplayPrice {
                             Text("then \(thenPrice)")
                                 .font(BespokeFont.inter(15, weight: .medium))
                                 .foregroundStyle(BespokeColor.muted)
                         }
-                    } else if let priceLine = subscriptionManager.plusMonthlyDisplayPrice {
-                        Text(priceLine)
-                            .font(BespokeFont.inter(20, weight: .semibold))
-                            .foregroundStyle(LinearGradient.bespokeGold)
                     }
                 }
             }
@@ -2047,7 +2234,7 @@ struct UpgradeInfoModalView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "sparkles")
                             .font(.system(size: 15, weight: .semibold))
-                        Text(subscriptionManager.eligibleIntroOffer?.purchaseButtonTitle ?? "Subscribe")
+                        Text(subscriptionManager.eligibleIntroOffer?.purchaseButtonTitle ?? BespokePlusOfferCopy.startFreeMonth)
                             .font(BespokeFont.inter(17, weight: .semibold))
                     }
                     .foregroundStyle(.white)
@@ -2133,7 +2320,7 @@ struct UpgradeInfoModalView: View {
             .padding(.top, 4)
 
             Text(subscriptionManager.eligibleIntroOffer?.disclosure
-                ?? "Payment will be charged to your Apple ID. Subscription renews monthly until cancelled in Settings.")
+                ?? "Start with 1 month free. After that, the monthly price is charged to your Apple ID. The subscription renews monthly until you cancel in Settings at least 24 hours before the period ends.")
                 .font(BespokeFont.inter(12, weight: .regular))
                 .foregroundStyle(BespokeColor.muted)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3562,4 +3749,5 @@ private struct HomeMainNavigationChrome: ViewModifier {
     ContentView()
         .environment(AppSession())
         .environment(SubscriptionManager())
+        .environment(NameQuizNotificationService.shared)
 }

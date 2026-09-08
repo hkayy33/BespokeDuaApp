@@ -29,6 +29,11 @@ struct DuaFeedView: View {
         self.isTabActive = isTabActive
     }
 
+    private func openMyPostsIfNeeded() {
+        guard DuaFeedReactionRouter.consumeOpenMyPosts() else { return }
+        selectedFilter = .myPosts
+    }
+
     private var filteredPosts: [DuaFeedPost] {
         let active = posts.filter(\.isActive)
         switch selectedFilter {
@@ -94,12 +99,20 @@ struct DuaFeedView: View {
 
             if isFeedLocked {
                 DuaFeedPaywallOverlay(
-                    onUnlock: { presentUpgradeModal?() },
+                    requiresSignIn: !session.isLoggedIn,
+                    onUnlock: {
+                        if session.isLoggedIn {
+                            presentUpgradeModal?()
+                        } else {
+                            session.presentAuth()
+                        }
+                    },
                     onDismiss: { selectMainTab(.home) }
                 )
             }
         }
         .task {
+            openMyPostsIfNeeded()
             if session.duaFeedPosts.isEmpty {
                 await session.refreshDuaFeed(showLoading: true)
             }
@@ -108,8 +121,13 @@ struct DuaFeedView: View {
             await session.refreshDuaFeed(showLoading: true)
         }
         .onChange(of: isTabActive) { _, active in
-            guard active, navigationPath.isEmpty else { return }
+            guard active else { return }
+            openMyPostsIfNeeded()
+            guard navigationPath.isEmpty else { return }
             Task { await session.refreshDuaFeed(showLoading: false) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .duaFeedReactionOpened)) { _ in
+            openMyPostsIfNeeded()
         }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active, navigationPath.isEmpty else { return }
@@ -826,7 +844,10 @@ private struct DuaFeedPostCard: View {
             Spacer(minLength: 4)
 
             HStack(spacing: 6) {
-                duaCountBadge
+                if let timeRemaining = post.timeRemainingText {
+                    themeBadge(timeRemaining)
+                }
+
                 postActionsMenu
             }
         }
@@ -922,13 +943,21 @@ private struct DuaFeedPostCard: View {
                 }
                 .accessibilityLabel("Your post")
             } else {
-                MakeDuaHandsButton(hasMadeDua: post.hasMadeDua, action: onMakeDua)
+                HStack(alignment: .center, spacing: 6) {
+                    MakeDuaHandsButton(hasMadeDua: post.hasMadeDua, action: onMakeDua)
+
+                    Text("\(post.duaCount)")
+                        .font(BespokeFont.inter(14, weight: .semibold))
+                        .foregroundStyle(BespokeColor.bodyText)
+                        .padding(.leading, -10)
+                        .accessibilityLabel("\(post.duaCount) made dua")
+                }
             }
 
             Spacer(minLength: 8)
 
-            if let timeRemaining = post.timeRemainingText {
-                themeBadge(timeRemaining)
+            if post.isOwnPost {
+                duaCountBadge
             }
         }
     }
@@ -947,7 +976,7 @@ private struct MakeDuaHandsButton: View {
                 playGlow()
             }
             action()
-        } label: {
+        }         label: {
             ZStack {
                 Circle()
                     .fill(

@@ -28,6 +28,31 @@ enum HomeNameOfTheDayService {
         return names[dailyIndex(for: .now, count: names.count)]
     }
 
+    static func allNames() async throws -> [AllahNameDetail] {
+        try await fetchAllNames()
+    }
+
+    static func name(number: Int) async throws -> AllahNameDetail {
+        if let cached = try? await fetchAllNames(),
+           let match = cached.first(where: { $0.number == number }) {
+            return match
+        }
+        return try await BespokeAPIClient().name(number: number)
+    }
+
+    /// Stable index for the daily 99 name reminder, distinct from the home name of the day.
+    static func quizIndex(for date: Date, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        let calendar = Calendar.current
+        let day = calendar.ordinality(of: .day, in: .year, for: date) ?? 1
+        let year = calendar.component(.year, from: date)
+        var hasher = Hasher()
+        hasher.combine("name-quiz")
+        hasher.combine(year)
+        hasher.combine(day)
+        return abs(hasher.finalize()) % count
+    }
+
     private static func fetchAllNames() async throws -> [AllahNameDetail] {
         if let cachedNames, !cachedNames.isEmpty {
             return cachedNames

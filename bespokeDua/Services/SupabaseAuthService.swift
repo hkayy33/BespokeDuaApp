@@ -80,7 +80,7 @@ final class SupabaseAuthService {
         try? await client.auth.session
     }
 
-    /// Handles `myapp://auth/callback?...` / `bespokedua://auth/callback?...` from the verification email.
+    /// Handles `myapp://auth/callback?...` and `https://www.bespokedua.com/auth/callback?...`.
     func session(from url: URL) async throws -> Session {
         try await client.auth.session(from: url)
     }
@@ -141,12 +141,21 @@ final class SupabaseAuthService {
     }
 
     static func isAuthCallbackURL(_ url: URL) -> Bool {
-        guard let scheme = url.scheme?.lowercased(),
-              SupabaseConfig.supportedURLSchemes.contains(scheme) else {
+        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let scheme = url.scheme?.lowercased() else { return false }
+
+        if scheme == "https" || scheme == "http" {
+            guard let host = url.host?.lowercased(),
+                  SupabaseConfig.authCallbackHosts.contains(host) else {
+                return false
+            }
+            return path == "auth/callback"
+        }
+
+        guard SupabaseConfig.supportedURLSchemes.contains(scheme) else {
             return false
         }
 
-        let path = url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if path == "auth/callback" { return true }
 
         // `myapp://auth/callback` is parsed with host `auth` and path `callback`.

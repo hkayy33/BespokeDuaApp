@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct DuaFeedPaywallOverlay: View {
+    var requiresSignIn = false
     let onUnlock: () -> Void
     let onDismiss: () -> Void
 
@@ -125,7 +126,7 @@ struct DuaFeedPaywallOverlay: View {
                 .accessibilityHidden(true)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Premium")
+        .accessibilityLabel(BespokePlusOfferCopy.freeMonthHeadline)
     }
 
     private var decorativeStars: some View {
@@ -150,7 +151,7 @@ struct DuaFeedPaywallOverlay: View {
             Image(systemName: "diamond.fill")
                 .font(.system(size: 9, weight: .bold))
 
-            Text("Premium feature")
+            Text(BespokePlusOfferCopy.premiumBadge)
                 .font(BespokeFont.inter(11.5, weight: .semibold))
                 .textCase(.uppercase)
                 .tracking(0.45)
@@ -168,13 +169,15 @@ struct DuaFeedPaywallOverlay: View {
 
     private var headerBlock: some View {
         VStack(spacing: 8) {
-            Text("Unlock Dua Feed")
+            Text(requiresSignIn ? "Sign in to continue" : "Unlock Dua Feed")
                 .font(BespokeFont.display(26))
                 .foregroundStyle(BespokeColor.forest)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: .infinity)
 
-            Text("Make du'a for others, share yours anonymously, and join the community feed.")
+            Text(requiresSignIn
+                ? "Sign in first to join the feed. You can start a free month after you're logged in."
+                : "Start with 1 month free. Make du'a for others, share yours anonymously, and join the community feed.")
                 .font(BespokeFont.inter(14, weight: .regular))
                 .foregroundStyle(BespokeColor.muted)
                 .multilineTextAlignment(.center)
@@ -256,10 +259,10 @@ struct DuaFeedPaywallOverlay: View {
     private var unlockButton: some View {
         Button(action: onUnlock) {
             HStack(spacing: 8) {
-                Image(systemName: "lock")
+                Image(systemName: requiresSignIn ? "person.crop.circle" : "lock")
                     .font(.system(size: 15, weight: .semibold))
 
-                Text("Unlock with Subscription")
+                Text(requiresSignIn ? "Sign in" : BespokePlusOfferCopy.startFreeMonth)
                     .font(BespokeFont.inter(15.5, weight: .semibold))
             }
             .foregroundStyle(.white)

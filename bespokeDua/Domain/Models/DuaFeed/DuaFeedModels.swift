@@ -16,7 +16,7 @@ enum DuaFeedFilter: String, CaseIterable, Identifiable {
         switch self {
         case .recent: "Recent"
         case .mostDuas: "Most dua made"
-        case .myPosts: "My posts"
+        case .myPosts: "Your duas"
         }
     }
 

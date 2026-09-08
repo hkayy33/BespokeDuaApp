@@ -430,6 +430,7 @@ struct AllSavedDuasListView: View {
     @State private var selectedDuaIds: Set<String> = []
     @State private var showMoveModal = false
     @State private var showDeleteConfirm = false
+    @State private var showWriteModal = false
     @State private var bulkActionInFlight = false
 
     private var categoryFilteredSavedDuas: [SavedDuaDTO] {
@@ -472,6 +473,7 @@ struct AllSavedDuasListView: View {
             .overlay { allSavedDuasEditOverlay }
             .overlay { allSavedDuasMoveOverlay }
             .overlay { allSavedDuasDeleteOverlay }
+            .overlay { allSavedDuasWriteOverlay }
             .overlay(alignment: .bottom) {
                 allSavedDuasSelectionBar
                     .ignoresSafeArea(edges: .bottom)
@@ -489,7 +491,14 @@ struct AllSavedDuasListView: View {
             title: isSelectionMode ? "Select duas" : "All saved duas",
             subtitle: isSelectionMode
                 ? "\(selectedDuaIds.count) selected • Tap to choose what to save"
-                : "Your saved reminders and supplications"
+                : "Your saved reminders and supplications",
+            trailing: {
+                if !isSelectionMode {
+                    WriteOwnDuaToolbarButton {
+                        showWriteModal = true
+                    }
+                }
+            }
         ) {
             Group {
                 if session.savedDuasLoading && session.savedDuas.isEmpty {
@@ -531,6 +540,19 @@ struct AllSavedDuasListView: View {
                 onAddCollections: { presentUpgradeModal?() },
                 onSaved: {
                     exitSelectionMode()
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var allSavedDuasWriteOverlay: some View {
+        if showWriteModal {
+            WriteOwnDuaModalView(
+                isPresented: $showWriteModal,
+                onSaved: { _ in
+                    selectedCategory = .bespoke
+                    selectedSortFilter = .recent
                 }
             )
         }
@@ -1078,6 +1100,7 @@ struct DuaCollectionDetailView: View {
     @State private var selectedDuaIds: Set<String> = []
     @State private var showMoveModal = false
     @State private var showRemoveConfirm = false
+    @State private var showWriteModal = false
     @State private var bulkActionInFlight = false
 
     private var displayedDuas: [SavedDuaDTO] {
@@ -1161,6 +1184,7 @@ struct DuaCollectionDetailView: View {
             .overlay { collectionDeleteOverlay }
             .overlay { collectionRemoveOverlay }
             .overlay { collectionMoveOverlay }
+            .overlay { collectionWriteOverlay }
             .overlay(alignment: .bottom) {
                 collectionSelectionBar
                     .ignoresSafeArea(edges: .bottom)
@@ -1200,35 +1224,47 @@ struct DuaCollectionDetailView: View {
 
     @ViewBuilder
     private var collectionHeaderTrailing: some View {
-        if detail != nil && !loading && !isSelectionMode {
-            if isEditing {
-                Button("Cancel") {
-                    cancelEditing()
+        if isSelectionMode {
+            EmptyView()
+        } else if isEditing {
+            Button("Cancel") {
+                cancelEditing()
+            }
+            .font(BespokeFont.inter(15, weight: .semibold))
+            .foregroundStyle(.white)
+        } else {
+            HStack(spacing: 2) {
+                WriteOwnDuaToolbarButton {
+                    showWriteModal = true
                 }
-                .font(BespokeFont.inter(15, weight: .semibold))
-                .foregroundStyle(.white)
-            } else {
-                Menu {
-                    Button {
-                        beginEditing()
-                    } label: {
-                        Label("Edit collection", systemImage: "pencil")
-                    }
 
-                    Button(role: .destructive) {
-                        deleteCollectionError = nil
-                        showDeleteCollectionConfirm = true
-                    } label: {
-                        Label("Delete collection", systemImage: "trash")
-                    }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .contentShape(Rectangle())
+                if detail != nil && !loading {
+                    collectionMoreMenu
                 }
             }
+        }
+    }
+
+    private var collectionMoreMenu: some View {
+        Menu {
+            Button {
+                beginEditing()
+            } label: {
+                Label("Edit collection", systemImage: "pencil")
+            }
+
+            Button(role: .destructive) {
+                deleteCollectionError = nil
+                showDeleteCollectionConfirm = true
+            } label: {
+                Label("Delete collection", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .contentShape(Rectangle())
         }
     }
 
@@ -1286,6 +1322,21 @@ struct DuaCollectionDetailView: View {
                 },
                 onConfirm: {
                     Task { await removeSelectedFromCollection() }
+                }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var collectionWriteOverlay: some View {
+        if showWriteModal {
+            WriteOwnDuaModalView(
+                isPresented: $showWriteModal,
+                collectionId: collectionId,
+                onSaved: { saved in
+                    selectedCategory = .bespoke
+                    selectedSortFilter = .recent
+                    appendWrittenDua(saved)
                 }
             )
         }
@@ -1689,6 +1740,27 @@ struct DuaCollectionDetailView: View {
         } catch {
             saveError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
+
+    private func appendWrittenDua(_ saved: SavedDuaDTO) {
+        guard let current = detail else {
+            Task {
+                await loadDetail()
+                selectedCategory = .bespoke
+            }
+            return
+        }
+        guard !current.savedDuas.contains(where: { $0.duaId == saved.duaId }) else { return }
+        var savedDuas = current.savedDuas
+        savedDuas.insert(saved, at: 0)
+        detail = DuaCollectionDetailDTO(
+            collectionId: current.collectionId,
+            name: current.name,
+            description: current.description,
+            createdAt: current.createdAt,
+            updatedAt: current.updatedAt,
+            savedDuas: savedDuas
+        )
     }
 
     private func patchDetailDua(_ updated: SavedDuaDTO) {

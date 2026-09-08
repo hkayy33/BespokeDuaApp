@@ -60,7 +60,8 @@ struct SunnahDuasView: View {
             .padding(.bottom, 24 + mainTabBarClearance)
         }
         .scrollIndicators(.hidden, axes: .vertical)
-        .scrollDismissesKeyboard(.interactively)
+        .scrollDismissesKeyboard(.never)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .background(BespokeColor.pageBackground)
         .toolbar(.hidden, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
@@ -163,22 +164,13 @@ struct SunnahDuasView: View {
             }
 
             VStack(alignment: .leading, spacing: 12) {
-                ZStack(alignment: .topLeading) {
-                    if requestText.isEmpty {
-                        Text("I feel..")
-                            .font(BespokeFont.inter(16, weight: .regular))
-                            .foregroundStyle(BespokeColor.subtle)
-                            .padding(.top, 12)
-                            .padding(.leading, 10)
-                            .allowsHitTesting(false)
-                    }
-                    TextEditor(text: $requestText)
-                        .font(BespokeFont.inter(16, weight: .regular))
-                        .foregroundStyle(BespokeColor.bodyText)
-                        .scrollContentBackground(.hidden)
-                        .frame(minHeight: 120)
-                        .focused($fieldFocused)
-                }
+                BespokePlaceholderTextEditor(
+                    text: $requestText,
+                    placeholder: "I feel..",
+                    isEditable: !recommendInFlight,
+                    focus: $fieldFocused
+                )
+                .transaction { $0.animation = nil }
                 .padding(12)
                 .background(Color.white)
                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -189,6 +181,11 @@ struct SunnahDuasView: View {
                             lineWidth: emptyRequestWarning || fieldFocused ? 2 : 1
                         )
                 )
+                .onChange(of: requestText) { _, newValue in
+                    if emptyRequestWarning, !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        emptyRequestWarning = false
+                    }
+                }
 
                 Text("Example: “I feel anxious about my exams…”")
                     .font(BespokeFont.inter(13, weight: .regular))
@@ -218,7 +215,7 @@ struct SunnahDuasView: View {
                         HStack(spacing: 10) {
                             Image(systemName: "sparkles")
                                 .font(.system(size: 16, weight: .semibold))
-                            Text("Upgrade")
+                            Text(BespokePlusOfferCopy.startFreeMonth)
                                 .font(BespokeFont.inter(17, weight: .semibold))
                         }
                         .foregroundStyle(.white)

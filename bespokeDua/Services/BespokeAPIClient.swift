@@ -76,6 +76,18 @@ struct BespokeAPIClient: Sendable {
         return text
     }
 
+    func emailInUse(_ email: String) async throws -> Bool {
+        let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "+&=")
+        let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: allowed) ?? trimmed
+        let req = try request(path: "Auth/email-in-use?email=\(encoded)", method: "GET")
+        let (data, resp) = try await data(for: req)
+        try throwIfNeeded(data: data, response: resp)
+        struct Body: Decodable { let inUse: Bool }
+        return (try? JSONDecoder().decode(Body.self, from: data))?.inUse ?? false
+    }
+
     func login(_ dto: LoginRequest) async throws -> AuthUser {
         let req = try request(path: "Auth/login", method: "POST", body: dto)
         let (data, resp) = try await data(for: req)
@@ -487,6 +499,18 @@ struct BespokeAPIClient: Sendable {
 
     func deleteDuaFeedPost(postId: String, userId: Int) async throws {
         let req = try request(path: "DuaFeed/\(postId)?userId=\(userId)", method: "DELETE")
+        let (data, resp) = try await data(for: req)
+        try throwIfNeeded(data: data, response: resp)
+    }
+
+    func registerPushDevice(userId: Int, deviceToken: String, sandbox: Bool) async throws {
+        struct Body: Encodable {
+            let userId: Int
+            let deviceToken: String
+            let sandbox: Bool
+        }
+        let body = Body(userId: userId, deviceToken: deviceToken, sandbox: sandbox)
+        let req = try request(path: "PushDevices", method: "POST", body: body)
         let (data, resp) = try await data(for: req)
         try throwIfNeeded(data: data, response: resp)
     }
