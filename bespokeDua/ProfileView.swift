@@ -59,12 +59,6 @@ struct ProfileView: View {
     private static let manageSubscriptionsURL = URL(string: "https://apps.apple.com/account/subscriptions")!
     private static let privacyPolicyURL = URL(string: "https://www.bespokedua.com/privacy-policy")!
     private static let termsOfUseURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
-    private static let renewalDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .long
-        formatter.timeStyle = .none
-        return formatter
-    }()
 
     var body: some View {
         ScrollView {
@@ -238,8 +232,8 @@ struct ProfileView: View {
                     }
 
                     if subscribed {
-                        if let renewalDate = subscriptionManager.appleSubscriptionRenewalDate {
-                            Text("Renews on \(Self.renewalDateFormatter.string(from: renewalDate)).")
+                        if let statusLine = subscriptionManager.appleSubscriptionStatusLine {
+                            Text(statusLine)
                                 .font(BespokeFont.inter(14, weight: .semibold))
                                 .foregroundStyle(BespokeColor.bodyText)
                                 .fixedSize(horizontal: false, vertical: true)
@@ -279,6 +273,16 @@ struct ProfileView: View {
                         .foregroundStyle(BespokeColor.muted)
                 }
                 .padding(.top, 4)
+            } else if let intro = subscriptionManager.eligibleIntroOffer {
+                Text(intro.headline)
+                    .font(BespokeFont.inter(18, weight: .semibold))
+                    .foregroundStyle(BespokeColor.forest)
+                    .padding(.top, 2)
+                if let thenPrice = intro.thenPriceLine {
+                    Text("then \(thenPrice)")
+                        .font(BespokeFont.inter(14, weight: .medium))
+                        .foregroundStyle(BespokeColor.muted)
+                }
             } else if let priceLine = subscriptionManager.plusMonthlyDisplayPrice {
                 Text(priceLine)
                     .font(BespokeFont.inter(18, weight: .semibold))

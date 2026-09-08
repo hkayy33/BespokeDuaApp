@@ -23,11 +23,29 @@ final class SubscriptionManager {
         return "\(formatted) / month"
     }
 
+    /// Shown only when this Apple ID can still redeem the App Store introductory offer.
+    /// StoreKit applies that offer automatically on `purchase()`; this is for disclosure only.
+    private(set) var eligibleIntroOffer: PlusIntroOffer?
+
     private(set) var isSubscribed = false
     private(set) var hasActiveAppleSubscription = false
     private(set) var hasActiveDatabaseSubscription = false
     private(set) var appleOriginalTransactionID: String?
     private(set) var appleSubscriptionRenewalDate: Date?
+    /// True while the current Apple entitlement is still in the introductory free period.
+    private(set) var isInIntroductoryPeriod = false
+
+    var appleSubscriptionStatusLine: String? {
+        guard let renewalDate = appleSubscriptionRenewalDate else { return nil }
+        let formatted = renewalDate.formatted(date: .long, time: .omitted)
+        if isInIntroductoryPeriod {
+            if let thenPrice = plusMonthlyDisplayPrice {
+                return "Free until \(formatted). Then \(thenPrice)."
+            }
+            return "Free until \(formatted)."
+        }
+        return "Renews on \(formatted)."
+    }
     private(set) var loadInFlight = false
     private(set) var purchaseInFlight = false
     private(set) var lastErrorMessage: String?
@@ -62,10 +80,34 @@ final class SubscriptionManager {
             product = loaded
             if product == nil {
                 lastErrorMessage = Self.productUnavailableMessage
+                eligibleIntroOffer = nil
+            } else {
+                await refreshIntroOffer()
             }
         } catch {
             lastErrorMessage = error.localizedDescription
+            eligibleIntroOffer = nil
         }
+    }
+
+    /// Introductory offers are applied by StoreKit at purchase time for eligible Apple IDs.
+    /// Creating an app account does not start the free month by itself.
+    private func refreshIntroOffer() async {
+        guard let product, let subscription = product.subscription,
+              let offer = subscription.introductoryOffer,
+              offer.paymentMode == .freeTrial else {
+            eligibleIntroOffer = nil
+            return
+        }
+        let eligible = await subscription.isEligibleForIntroOffer
+        guard eligible else {
+            eligibleIntroOffer = nil
+            return
+        }
+        eligibleIntroOffer = PlusIntroOffer(
+            durationText: Self.offerDurationText(period: offer.period, periodCount: offer.periodCount),
+            thenPriceLine: plusMonthlyDisplayPrice
+        )
     }
 
     private static var productUnavailableMessage: String {
@@ -86,6 +128,7 @@ final class SubscriptionManager {
         var active = false
         var linkedOriginalID: String?
         var renewalDate: Date?
+        var inIntroPeriod = false
         for await result in Transaction.currentEntitlements {
             guard case .verified(let transaction) = result else { continue }
             guard transaction.productID == Self.plusMonthlyProductID else { continue }
@@ -93,9 +136,11 @@ final class SubscriptionManager {
                 active = true
                 linkedOriginalID = String(transaction.originalID)
                 renewalDate = transaction.expirationDate
+                inIntroPeriod = transaction.offer?.type == .introductory
             }
         }
         hasActiveAppleSubscription = active
+        isInIntroductoryPeriod = inIntroPeriod
         // Only set when StoreKit reports an ID — avoid clearing `appleOriginalTransactionID` when
         // `currentEntitlements` is briefly empty (common right after a successful purchase).
         if let linkedOriginalID {
@@ -104,6 +149,9 @@ final class SubscriptionManager {
             appleOriginalTransactionID = nil
         }
         appleSubscriptionRenewalDate = renewalDate
+        if !active {
+            isInIntroductoryPeriod = false
+        }
         recomputeEffectiveSubscription()
     }
 
@@ -137,6 +185,7 @@ final class SubscriptionManager {
                 if transaction.revocationDate == nil {
                     appleOriginalTransactionID = String(transaction.originalID)
                     hasActiveAppleSubscription = true
+                    isInIntroductoryPeriod = transaction.offer?.type == .introductory
                 }
                 await transaction.finish()
             case .userCancelled:
@@ -184,6 +233,7 @@ final class SubscriptionManager {
                 if transaction.revocationDate == nil {
                     appleOriginalTransactionID = String(transaction.originalID)
                     hasActiveAppleSubscription = true
+                    isInIntroductoryPeriod = transaction.offer?.type == .introductory
                 }
             }
             await transaction.finish()
@@ -204,4 +254,38 @@ final class SubscriptionManager {
 
 private enum SubscriptionManagerError: Error {
     case failedVerification
+}
+
+struct PlusIntroOffer: Equatable, Sendable {
+    let durationText: String
+    let thenPriceLine: String?
+
+    var headline: String { "\(durationText) free" }
+
+    var purchaseButtonTitle: String {
+        durationText == "1 month" ? "Start free month" : "Start free trial"
+    }
+
+    var disclosure: String {
+        let thenPrice = thenPriceLine ?? "the monthly price"
+        return "Start with \(durationText) free. After that, \(thenPrice) is charged to your Apple ID. The subscription renews monthly until you cancel in Settings at least 24 hours before the period ends."
+    }
+}
+
+private extension SubscriptionManager {
+    static func offerDurationText(period: Product.SubscriptionPeriod, periodCount: Int) -> String {
+        let total = max(period.value, 1) * max(periodCount, 1)
+        switch period.unit {
+        case .day:
+            return total == 1 ? "1 day" : "\(total) days"
+        case .week:
+            return total == 1 ? "1 week" : "\(total) weeks"
+        case .month:
+            return total == 1 ? "1 month" : "\(total) months"
+        case .year:
+            return total == 1 ? "1 year" : "\(total) years"
+        @unknown default:
+            return "a free trial"
+        }
+    }
 }

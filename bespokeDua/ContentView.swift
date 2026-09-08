@@ -1907,12 +1907,6 @@ struct UpgradeInfoModalView: View {
     )!
     /// Standard Apple Terms of Use (EULA) for auto-renewable subscriptions.
     private static let appleStandardEULAURL = URL(string: "https://www.apple.com/legal/internet-services/itunes/dev/stdeula/")!
-    private static let renewalDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .long
-        formatter.timeStyle = .none
-        return formatter
-    }()
 
     var body: some View {
         BespokeCardModalView(isPresented: $isPresented, title: "Bespoke Plus", theme: .plus) {
@@ -1942,8 +1936,8 @@ struct UpgradeInfoModalView: View {
                 EmptyView()
             }
 
-            if let renewalDate = subscriptionManager.appleSubscriptionRenewalDate {
-                Text("Renews on \(Self.renewalDateFormatter.string(from: renewalDate)).")
+            if let statusLine = subscriptionManager.appleSubscriptionStatusLine {
+                Text(statusLine)
                     .font(BespokeFont.inter(15, weight: .semibold))
                     .foregroundStyle(BespokeColor.goldDeep)
                     .fixedSize(horizontal: false, vertical: true)
@@ -2010,6 +2004,15 @@ struct UpgradeInfoModalView: View {
                                 .foregroundStyle(BespokeColor.muted)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if let intro = subscriptionManager.eligibleIntroOffer {
+                        Text(intro.headline)
+                            .font(BespokeFont.inter(20, weight: .semibold))
+                            .foregroundStyle(LinearGradient.bespokeGold)
+                        if let thenPrice = intro.thenPriceLine {
+                            Text("then \(thenPrice)")
+                                .font(BespokeFont.inter(15, weight: .medium))
+                                .foregroundStyle(BespokeColor.muted)
+                        }
                     } else if let priceLine = subscriptionManager.plusMonthlyDisplayPrice {
                         Text(priceLine)
                             .font(BespokeFont.inter(20, weight: .semibold))
@@ -2044,7 +2047,7 @@ struct UpgradeInfoModalView: View {
                     HStack(spacing: 8) {
                         Image(systemName: "sparkles")
                             .font(.system(size: 15, weight: .semibold))
-                        Text("Subscribe")
+                        Text(subscriptionManager.eligibleIntroOffer?.purchaseButtonTitle ?? "Subscribe")
                             .font(BespokeFont.inter(17, weight: .semibold))
                     }
                     .foregroundStyle(.white)
@@ -2129,7 +2132,8 @@ struct UpgradeInfoModalView: View {
             }
             .padding(.top, 4)
 
-            Text("Payment will be charged to your Apple ID. Subscription renews monthly until cancelled in Settings.")
+            Text(subscriptionManager.eligibleIntroOffer?.disclosure
+                ?? "Payment will be charged to your Apple ID. Subscription renews monthly until cancelled in Settings.")
                 .font(BespokeFont.inter(12, weight: .regular))
                 .foregroundStyle(BespokeColor.muted)
                 .fixedSize(horizontal: false, vertical: true)
